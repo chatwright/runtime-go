@@ -35,6 +35,7 @@ func (tgPlatform) Start() platform.Emulator { return NewEmulator() }
 // outgoing is a single Bot API call the bot made to the emulator.
 type outgoing struct {
 	chatID     int64
+	messageID  int
 	text       string
 	markup     *tgbotapi.InlineKeyboardMarkup
 	receivedAt time.Time
@@ -88,6 +89,31 @@ func (e *Emulator) EncodeInboundText(in platform.Inbound) (string, []byte) {
 	return "application/json", body
 }
 
+// EncodeCallback builds a Telegram callback query (an inline-button click).
+func (e *Emulator) EncodeCallback(in platform.InboundCallback) (string, []byte) {
+	from := &tgbotapi.User{
+		ID:        in.User.ID,
+		FirstName: in.User.FirstName,
+		LastName:  in.User.LastName,
+		UserName:  in.User.Username,
+	}
+	update := tgbotapi.Update{
+		UpdateID: in.UpdateID,
+		CallbackQuery: &tgbotapi.CallbackQuery{
+			ID:   in.CallbackID,
+			From: from,
+			Data: in.Data,
+			Message: &tgbotapi.Message{
+				MessageID: in.MessageID,
+				From:      &tgbotapi.User{ID: 1, IsBot: true, FirstName: "ChatwrightBot"},
+				Chat:      &tgbotapi.Chat{ID: in.ChatID, Type: "private", FirstName: in.User.FirstName},
+			},
+		},
+	}
+	body, _ := json.Marshal(update)
+	return "application/json", body
+}
+
 // handle routes /bot<token>/<method> like the real Bot API.
 func (e *Emulator) handle(w http.ResponseWriter, r *http.Request) {
 	_, method := parsePath(r.URL.Path)
@@ -108,10 +134,10 @@ func (e *Emulator) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	chatID, text, markup := parseSendMessage(r)
 
 	e.mu.Lock()
-	o := &outgoing{chatID: chatID, text: text, markup: markup, receivedAt: time.Now()}
-	e.calls = append(e.calls, o)
 	messageID := e.nextMessageID
 	e.nextMessageID++
+	o := &outgoing{chatID: chatID, messageID: messageID, text: text, markup: markup, receivedAt: time.Now()}
+	e.calls = append(e.calls, o)
 	close(e.updated)
 	e.updated = make(chan struct{})
 	e.mu.Unlock()
@@ -161,6 +187,7 @@ func normalize(o *outgoing) *platform.Message {
 	m := &platform.Message{
 		Platform:   "telegram",
 		ChatID:     o.chatID,
+		MessageID:  o.messageID,
 		Text:       o.text,
 		ReceivedAt: o.receivedAt,
 	}

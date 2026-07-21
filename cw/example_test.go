@@ -29,20 +29,37 @@ func tgGreeter(botAPIURL, token string) http.HandlerFunc {
 				} `json:"chat"`
 				Text string `json:"text"`
 			} `json:"message"`
+			CallbackQuery struct {
+				Data    string `json:"data"`
+				Message struct {
+					Chat struct {
+						ID int64 `json:"id"`
+					} `json:"chat"`
+				} `json:"message"`
+			} `json:"callback_query"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&upd); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		reply := map[string]any{"chat_id": upd.Message.Chat.ID, "text": "Howdy stranger"}
-		if upd.Message.Text == "/start" {
-			reply["reply_markup"] = map[string]any{
-				"inline_keyboard": [][]map[string]any{{
-					{"text": "My events", "callback_data": "my-events"},
-				}},
+
+		switch {
+		case upd.CallbackQuery.Data == "my-events":
+			post(botAPIURL+"/bot"+token+"/sendMessage", map[string]any{
+				"chat_id": upd.CallbackQuery.Message.Chat.ID,
+				"text":    "Here are your events",
+			})
+		default:
+			reply := map[string]any{"chat_id": upd.Message.Chat.ID, "text": "Howdy stranger"}
+			if upd.Message.Text == "/start" {
+				reply["reply_markup"] = map[string]any{
+					"inline_keyboard": [][]map[string]any{{
+						{"text": "My events", "callback_data": "my-events"},
+					}},
+				}
 			}
+			post(botAPIURL+"/bot"+token+"/sendMessage", reply)
 		}
-		post(botAPIURL+"/bot"+token+"/sendMessage", reply)
 		w.WriteHeader(http.StatusOK)
 	}
 }
@@ -130,4 +147,22 @@ func TestTelegramActions(t *testing.T) {
 	msg.ExpectAction(0, 0).
 		Label("My events").
 		ID("my-events")
+}
+
+// TestTelegramClick clicks an inline button and asserts the follow-up reply,
+// proving the user/agent can activate an action and continue the conversation.
+func TestTelegramClick(t *testing.T) {
+	cw := chatwright.New(t)
+	cw.ServeWebhook(tgGreeter(cw.BotAPIURL(), "TEST:TOKEN"))
+
+	chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+	chat.SendText("/start")
+
+	msg := chat.ExpectBotMessage().Within(time.Second).IsTextMessage()
+
+	// "Click" the button: sends a callback to the bot, then assert its reply.
+	msg.ExpectAction(0, 0).Click().
+		ExpectBotMessage().
+		Within(time.Second).
+		Text("Here are your events")
 }

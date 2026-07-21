@@ -25,6 +25,7 @@ import (
 	"hash/fnv"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/chatwright/chatwright/platform"
@@ -115,6 +116,32 @@ func (cw *Chatwright) deliverText(chatID int64, user platform.User, text string)
 	cw.nextUpdateID++
 	cw.nextInMsgID++
 
+	cw.post(contentType, body)
+}
+
+// deliverCallback encodes a button click for the active platform and POSTs it to
+// the bot-under-test's webhook.
+func (cw *Chatwright) deliverCallback(chatID int64, user platform.User, data string, messageID int) {
+	cw.t.Helper()
+	if cw.webhookURL == "" {
+		cw.t.Fatalf("chatwright: no webhook configured; call ServeWebhook or WebhookAt before clicking")
+		return
+	}
+	contentType, body := cw.emu.EncodeCallback(platform.InboundCallback{
+		ChatID:     chatID,
+		User:       user,
+		Data:       data,
+		MessageID:  messageID,
+		UpdateID:   cw.nextUpdateID,
+		CallbackID: "cb" + strconv.Itoa(cw.nextUpdateID),
+	})
+	cw.nextUpdateID++
+	cw.post(contentType, body)
+}
+
+// post delivers an encoded webhook payload to the bot-under-test.
+func (cw *Chatwright) post(contentType string, body []byte) {
+	cw.t.Helper()
 	resp, err := cw.client.Post(cw.webhookURL, contentType, bytes.NewReader(body))
 	if err != nil {
 		cw.t.Fatalf("chatwright: deliver update to webhook: %v", err)

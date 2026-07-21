@@ -17,14 +17,26 @@ type User struct {
 	Username  string
 }
 
-// Inbound is a neutral inbound event that a Platform encodes as its own webhook
-// payload before delivery to the bot-under-test.
+// Inbound is a neutral inbound text event that a Platform encodes as its own
+// webhook payload before delivery to the bot-under-test.
 type Inbound struct {
 	ChatID    int64
 	User      User
 	Text      string
 	UpdateID  int
 	MessageID int
+}
+
+// InboundCallback is a neutral "button click": the user activating an interactive
+// action on a bot message. A Platform encodes it as a Telegram callback query, a
+// WhatsApp interactive reply, etc.
+type InboundCallback struct {
+	ChatID     int64
+	User       User
+	Data       string // the action's stable ID (Telegram callback_data / WhatsApp reply id)
+	MessageID  int    // the bot message the action was attached to
+	UpdateID   int
+	CallbackID string
 }
 
 // Action is a neutral interactive action (a button) captured from a bot message.
@@ -39,6 +51,7 @@ type Action struct {
 type Message struct {
 	Platform   string
 	ChatID     int64
+	MessageID  int // id the platform assigned to this outbound message
 	Text       string
 	Actions    [][]Action
 	ReceivedAt time.Time
@@ -57,6 +70,10 @@ type Emulator interface {
 	// EncodeInboundText encodes a user text message as this platform's webhook
 	// payload, returning the content type and body to POST to the bot's webhook.
 	EncodeInboundText(in Inbound) (contentType string, body []byte)
+
+	// EncodeCallback encodes a button click (interactive action activation) as
+	// this platform's webhook payload.
+	EncodeCallback(in InboundCallback) (contentType string, body []byte)
 
 	// WaitForMessage waits up to timeout for the (consumed+1)-th outbound bot
 	// message to chatID, returning it normalized, or false on timeout.

@@ -102,13 +102,30 @@ func (m *BotMessage) action(row, col int) *platform.Action {
 // native representation (Telegram button text/callback_data, WhatsApp reply
 // title/id).
 func (m *BotMessage) ExpectAction(row, col int) *Action {
-	return &Action{chat: m.chat, act: m.action(row, col)}
+	m.resolve()
+	return &Action{chat: m.chat, act: m.action(row, col), messageID: m.msg.MessageID}
 }
 
 // Action is a platform-neutral assertion handle for an interactive action.
 type Action struct {
-	chat *Chat
-	act  *platform.Action
+	chat      *Chat
+	act       *platform.Action
+	messageID int
+}
+
+// Click activates the action, sending the appropriate event back to the bot: a
+// callback for actions with an ID (Telegram callback query / WhatsApp interactive
+// reply), or the action's label as text otherwise. Returns the chat so a reply
+// can be asserted next.
+func (a *Action) Click() *Chat {
+	a.chat.cw.t.Helper()
+	a.chat.lastSent = time.Now()
+	if a.act.ID != "" {
+		a.chat.cw.deliverCallback(a.chat.chatID, a.chat.user, a.act.ID, a.messageID)
+	} else {
+		a.chat.cw.deliverText(a.chat.chatID, a.chat.user, a.act.Label)
+	}
+	return a.chat
 }
 
 // Label asserts the action's user-visible label.

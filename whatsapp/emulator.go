@@ -34,6 +34,7 @@ func (waPlatform) Start() platform.Emulator { return NewEmulator() }
 
 type outgoing struct {
 	chatID     int64
+	messageID  int
 	text       string
 	receivedAt time.Time
 }
@@ -42,14 +43,15 @@ type outgoing struct {
 type Emulator struct {
 	server *httptest.Server
 
-	mu      sync.Mutex
-	calls   []*outgoing
-	updated chan struct{}
+	mu            sync.Mutex
+	calls         []*outgoing
+	nextMessageID int
+	updated       chan struct{}
 }
 
 // NewEmulator starts a fake WhatsApp Cloud API server on a random local port.
 func NewEmulator() *Emulator {
-	e := &Emulator{updated: make(chan struct{})}
+	e := &Emulator{nextMessageID: 1, updated: make(chan struct{})}
 	e.server = httptest.NewServer(http.HandlerFunc(e.handle))
 	return e
 }
@@ -94,6 +96,40 @@ func (e *Emulator) EncodeInboundText(in platform.Inbound) (string, []byte) {
 	return "application/json", body
 }
 
+// EncodeCallback builds an inbound WhatsApp interactive button reply (a click).
+func (e *Emulator) EncodeCallback(in platform.InboundCallback) (string, []byte) {
+	waID := strconv.FormatInt(in.ChatID, 10)
+	req := inboundRequest{
+		Object: "whatsapp_business_account",
+		Entry: []inboundEntry{{
+			ID: "chatwright",
+			Changes: []inboundChange{{
+				Field: "messages",
+				Value: inboundValue{
+					MessagingProduct: "whatsapp",
+					Metadata:         wabotapi.WebhookMetadata{DisplayPhoneNumber: "15550000000", PhoneNumberID: "chatwright-phone"},
+					Contacts: []wabotapi.WebhookContact{{
+						Profile: wabotapi.WebhookContactProfile{Name: in.User.FirstName},
+						WaID:    waID,
+					}},
+					Messages: []inboundMessage{{
+						From:      waID,
+						ID:        "wamid." + strconv.Itoa(in.UpdateID),
+						Timestamp: strconv.FormatInt(time.Now().Unix(), 10),
+						Type:      string(wabotapi.InboundMessageTypeInteractive),
+						Interactive: &inboundInteractive{
+							Type:        "button_reply",
+							ButtonReply: &inboundButtonReply{ID: in.Data, Title: in.Data},
+						},
+					}},
+				},
+			}},
+		}},
+	}
+	body, _ := json.Marshal(req)
+	return "application/json", body
+}
+
 // handle emulates POST /{version}/{phoneNumberID}/messages.
 func (e *Emulator) handle(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasSuffix(strings.TrimSuffix(r.URL.Path, "/"), "/messages") {
@@ -106,7 +142,9 @@ func (e *Emulator) handle(w http.ResponseWriter, r *http.Request) {
 	chatID, _ := strconv.ParseInt(cfg.To, 10, 64)
 
 	e.mu.Lock()
-	e.calls = append(e.calls, &outgoing{chatID: chatID, text: cfg.Text.Body, receivedAt: time.Now()})
+	messageID := e.nextMessageID
+	e.nextMessageID++
+	e.calls = append(e.calls, &outgoing{chatID: chatID, messageID: messageID, text: cfg.Text.Body, receivedAt: time.Now()})
 	close(e.updated)
 	e.updated = make(chan struct{})
 	e.mu.Unlock()
@@ -142,6 +180,7 @@ func (e *Emulator) WaitForMessage(chatID int64, consumed int, timeout time.Durat
 			return &platform.Message{
 				Platform:   "whatsapp",
 				ChatID:     match.chatID,
+				MessageID:  match.messageID,
 				Text:       match.text,
 				ReceivedAt: match.receivedAt,
 			}, true
@@ -184,13 +223,24 @@ type inboundValue struct {
 }
 
 type inboundMessage struct {
-	From      string       `json:"from"`
-	ID        string       `json:"id"`
-	Timestamp string       `json:"timestamp"`
-	Type      string       `json:"type"`
-	Text      *inboundText `json:"text,omitempty"`
+	From        string              `json:"from"`
+	ID          string              `json:"id"`
+	Timestamp   string              `json:"timestamp"`
+	Type        string              `json:"type"`
+	Text        *inboundText        `json:"text,omitempty"`
+	Interactive *inboundInteractive `json:"interactive,omitempty"`
 }
 
 type inboundText struct {
 	Body string `json:"body"`
+}
+
+type inboundInteractive struct {
+	Type        string              `json:"type"`
+	ButtonReply *inboundButtonReply `json:"button_reply,omitempty"`
+}
+
+type inboundButtonReply struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
 }
