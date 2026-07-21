@@ -11,10 +11,11 @@ import (
 	"github.com/chatwright/chatwright/examples/greetbot"
 )
 
-// TestGreetBotEndToEnd runs a full end-to-end loop against a real bot:
+// TestGreetBotEndToEnd runs greetScenario against a full end-to-end setup:
 //
 //  1. Chatwright boots an emulated Telegram Bot API server.
-//  2. A real greetbot is constructed to use that emulator as its Bot API host.
+//  2. A real greetbot is constructed to use that emulator as its Bot API host,
+//     with its clock fixed so /time's reply is deterministic and assertable.
 //  3. The bot is served on its own HTTP listener (a real TCP port).
 //  4. The scenario is connected to that listener with WebhookAt, and driven with
 //     platform-neutral verbs.
@@ -23,8 +24,16 @@ import (
 // real tgbotapi client; Chatwright delivers updates and captures the API calls
 // over HTTP.
 func TestGreetBotEndToEnd(t *testing.T) {
-	cw, chat := startGreetBot(t)
+	fixedNow := time.Date(2026, 7, 21, 12, 34, 56, 0, time.UTC)
+	_, chat := startGreetBot(t, greetbot.WithClock(func() time.Time { return fixedNow }))
 
+	greetScenario(chat, fixedNow)
+}
+
+// greetScenario is the platform-neutral happy path: greet, inspect /start's
+// language options, then ask for the time and validate the bot returns exactly
+// what its (fixed) clock says.
+func greetScenario(chat *chatwright.Chat, wantNow time.Time) {
 	chat.SendText("Hi")
 	chat.ExpectBotMessage().
 		Within(time.Second).
@@ -38,7 +47,10 @@ func TestGreetBotEndToEnd(t *testing.T) {
 		Label("English").
 		ID("lang:en")
 
-	_ = cw
+	chat.SendText("/time")
+	chat.ExpectBotMessage().
+		Within(time.Second).
+		Text(greetbot.FormatTime(wantNow))
 }
 
 // TestGreetBotLanguageSelection drives /start, clicks a non-default language
@@ -70,14 +82,26 @@ func TestGreetBotLanguageSelection(t *testing.T) {
 		Text("¡Hola, forastero!")
 }
 
-// startGreetBot boots Chatwright, runs a real greetbot on its own TCP listener,
-// and connects the scenario to it via WebhookAt.
-func startGreetBot(t *testing.T) (*chatwright.Chatwright, *chatwright.Chat) {
+// TestGreetBotTime validates /time in isolation, independent of language state,
+// against a fixed clock.
+func TestGreetBotTime(t *testing.T) {
+	fixedNow := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	_, chat := startGreetBot(t, greetbot.WithClock(func() time.Time { return fixedNow }))
+
+	chat.SendText("/time")
+	chat.ExpectBotMessage().
+		Within(time.Second).
+		Text("03:04:05 UTC")
+}
+
+// startGreetBot boots Chatwright, runs a real greetbot (configured with opts) on
+// its own TCP listener, and connects the scenario to it via WebhookAt.
+func startGreetBot(t *testing.T, opts ...greetbot.Option) (*chatwright.Chatwright, *chatwright.Chat) {
 	t.Helper()
 	cw := chatwright.New(t) // Telegram is the default platform
 
 	const token = "TEST:TOKEN"
-	bot := greetbot.New(cw.BotAPIURL(), token)
+	bot := greetbot.New(cw.BotAPIURL(), token, opts...)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

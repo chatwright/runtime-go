@@ -3,11 +3,11 @@
 // outbound calls are redirected to whatever Bot API host it is constructed with
 // (Chatwright's emulator in tests, https://api.telegram.org in production).
 //
-// It is intentionally tiny: /start offers a language choice; picking one greets
-// the user in that language and is remembered for the rest of the chat. The
-// point is to prove a genuine Telegram-protocol bot — parsing real updates,
-// tracking per-chat state, and sending via the real client — can be driven by
-// Chatwright over HTTP.
+// It is intentionally tiny: /start offers a language choice (picking one greets
+// the user in that language and is remembered for the rest of the chat), and
+// /time replies with the current time. The point is to prove a genuine
+// Telegram-protocol bot — parsing real updates, tracking per-chat state, and
+// sending via the real client — can be driven by Chatwright over HTTP.
 package greetbot
 
 import (
@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bots-go-framework/bots-api-telegram/tgbotapi"
 )
@@ -45,22 +46,46 @@ func greetingFor(code string) string {
 	return greetingFor(defaultLanguage)
 }
 
+// TimeLayout is the format /time replies use. Exported so tests can compute the
+// exact expected reply for a given instant without duplicating the format.
+const TimeLayout = "15:04:05 MST"
+
+// FormatTime renders t (in UTC) the way /time replies do.
+func FormatTime(t time.Time) string {
+	return t.UTC().Format(TimeLayout)
+}
+
 // Bot is a minimal Telegram bot with per-chat language state.
 type Bot struct {
 	api *tgbotapi.BotAPI
+	now func() time.Time
 
 	mu   sync.Mutex
 	lang map[int64]string // chatID -> selected language code
 }
 
+// Option configures a Bot at construction time.
+type Option func(*Bot)
+
+// WithClock overrides the bot's notion of "now", used by /time. Tests use it to
+// get a deterministic, assertable reply instead of racing the wall clock.
+func WithClock(now func() time.Time) Option {
+	return func(b *Bot) { b.now = now }
+}
+
 // New builds a bot whose Telegram Bot API calls go to apiBaseURL (e.g.
 // Chatwright's emulator URL). token is the bot token used in the API path.
-func New(apiBaseURL, token string) *Bot {
+func New(apiBaseURL, token string, opts ...Option) *Bot {
 	client := &http.Client{Transport: redirect(apiBaseURL)}
-	return &Bot{
+	b := &Bot{
 		api:  tgbotapi.NewBotAPIWithClient(token, client),
+		now:  time.Now,
 		lang: make(map[int64]string),
 	}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
 }
 
 // Handler returns the bot's webhook handler. Point Chatwright at it with
@@ -95,6 +120,12 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 			))
 		}
 		reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
+		_, _ = b.api.Send(reply)
+		return
+	}
+
+	if msg.Text == "/time" {
+		reply := tgbotapi.NewMessage(msg.Chat.ID, FormatTime(b.now()))
 		_, _ = b.api.Send(reply)
 		return
 	}
