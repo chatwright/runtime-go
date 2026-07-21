@@ -193,6 +193,12 @@ func (e *Emulator) WaitForMessage(chatID int64, consumed int, timeout time.Durat
 	}
 }
 
+// WaitForEdit always reports no edit: the WhatsApp Cloud API has no
+// message-edit endpoint, so a sent text message can never change in place.
+func (e *Emulator) WaitForEdit(int64, int, int, time.Duration) (*platform.Message, bool) {
+	return nil, false
+}
+
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)

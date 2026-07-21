@@ -19,6 +19,10 @@ type BotMessage struct {
 	resolved bool
 	msg      *platform.Message
 	latency  time.Duration
+
+	// editOf, when set, makes resolve wait for an in-place edit of that message
+	// (Version > editOf.Version) instead of waiting for a new outbound message.
+	editOf *platform.Message
 }
 
 // Within bounds how long the bot may take to reply. It both sets the wait window
@@ -30,19 +34,32 @@ func (m *BotMessage) Within(d time.Duration) *BotMessage {
 	return m
 }
 
-// resolve waits for the bot's next message to this chat and records latency.
+// resolve waits for the bot's next message to this chat (or, for a handle
+// obtained via ExpectEdited, for that specific message to be edited), and
+// records latency.
 func (m *BotMessage) resolve() {
 	if m.resolved {
 		return
 	}
 	m.chat.cw.t.Helper()
-	msg, ok := m.chat.cw.emu.WaitForMessage(m.chat.chatID, m.chat.consumed, m.timeout)
-	if !ok {
-		m.chat.cw.t.Fatalf("chatwright: expected a bot message within %s, but none arrived", m.timeout)
-		return
+
+	var msg *platform.Message
+	var ok bool
+	if m.editOf != nil {
+		msg, ok = m.chat.cw.emu.WaitForEdit(m.chat.chatID, m.editOf.MessageID, m.editOf.Version, m.timeout)
+		if !ok {
+			m.chat.cw.t.Fatalf("chatwright: expected message %d to be edited within %s, but it was not", m.editOf.MessageID, m.timeout)
+			return
+		}
+	} else {
+		msg, ok = m.chat.cw.emu.WaitForMessage(m.chat.chatID, m.chat.consumed, m.timeout)
+		if !ok {
+			m.chat.cw.t.Fatalf("chatwright: expected a bot message within %s, but none arrived", m.timeout)
+			return
+		}
+		m.chat.consumed++
 	}
 	m.msg = msg
-	m.chat.consumed++
 	m.resolved = true
 
 	if lat := msg.ReceivedAt.Sub(m.chat.lastSent); lat > 0 {
@@ -72,6 +89,17 @@ func (m *BotMessage) Text(want string) *BotMessage {
 		m.chat.cw.t.Errorf("chatwright: bot message text = %q, want %q", m.msg.Text, want)
 	}
 	return m
+}
+
+// ExpectEdited returns a fluent handle that waits for this message to be
+// edited in place (e.g. a Telegram editMessageText call) and asserts on its new
+// content — the same assertion methods as ExpectBotMessage, but bound to this
+// message's identity rather than to the next outbound message. The wait window
+// defaults to this handle's own (5s unless overridden); narrow it with Within.
+func (m *BotMessage) ExpectEdited() *BotMessage {
+	m.chat.cw.t.Helper()
+	m.resolve()
+	return &BotMessage{chat: m.chat, timeout: m.timeout, editOf: m.msg}
 }
 
 // Metrics returns the metrics captured for this message.

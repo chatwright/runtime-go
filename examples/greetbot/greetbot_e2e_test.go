@@ -14,8 +14,7 @@ import (
 // TestGreetBotEndToEnd runs greetScenario against a full end-to-end setup:
 //
 //  1. Chatwright boots an emulated Telegram Bot API server.
-//  2. A real greetbot is constructed to use that emulator as its Bot API host,
-//     with its clock fixed so /time's reply is deterministic and assertable.
+//  2. A real greetbot is constructed to use that emulator as its Bot API host.
 //  3. The bot is served on its own HTTP listener (a real TCP port).
 //  4. The scenario is connected to that listener with WebhookAt, and driven with
 //     platform-neutral verbs.
@@ -24,16 +23,14 @@ import (
 // real tgbotapi client; Chatwright delivers updates and captures the API calls
 // over HTTP.
 func TestGreetBotEndToEnd(t *testing.T) {
-	fixedNow := time.Date(2026, 7, 21, 12, 34, 56, 0, time.UTC)
-	_, chat := startGreetBot(t, greetbot.WithClock(func() time.Time { return fixedNow }))
+	_, chat := startGreetBot(t)
 
-	greetScenario(chat, fixedNow)
+	greetScenario(chat)
 }
 
-// greetScenario is the platform-neutral happy path: greet, inspect /start's
-// language options, then ask for the time and validate the bot returns exactly
-// what its (fixed) clock says.
-func greetScenario(chat *chatwright.Chat, wantNow time.Time) {
+// greetScenario is the platform-neutral happy path: greet, then inspect
+// /start's language options.
+func greetScenario(chat *chatwright.Chat) {
 	chat.SendText("Hi")
 	chat.ExpectBotMessage().
 		Within(time.Second).
@@ -46,16 +43,12 @@ func greetScenario(chat *chatwright.Chat, wantNow time.Time) {
 		ExpectAction(0, 0).
 		Label("English").
 		ID("lang:en")
-
-	chat.SendText("/time")
-	chat.ExpectBotMessage().
-		Within(time.Second).
-		Text(greetbot.FormatTime(wantNow))
 }
 
 // TestGreetBotLanguageSelection drives /start, clicks a non-default language
 // button, and validates the bot replies in the selected language from then on —
-// both immediately after selection and on a later, unrelated message.
+// both immediately after selection (by editing the language-choice message in
+// place) and on a later, unrelated message.
 func TestGreetBotLanguageSelection(t *testing.T) {
 	_, chat := startGreetBot(t)
 
@@ -65,12 +58,14 @@ func TestGreetBotLanguageSelection(t *testing.T) {
 		IsTextMessage()
 	msg.Text("Choose your language")
 
-	// Pick Español (row 1: en, es, fr -> es is row 1).
+	// Pick Español (row 1: en, es, fr -> es is row 1). The bot edits THIS
+	// message in place, translating it, instead of sending a new one.
 	msg.ExpectAction(1, 0).
 		Label("Español").
 		ID("lang:es").
-		Click().
-		ExpectBotMessage().
+		Click()
+
+	msg.ExpectEdited().
 		Within(time.Second).
 		Text("¡Hola, forastero!")
 
@@ -82,16 +77,23 @@ func TestGreetBotLanguageSelection(t *testing.T) {
 		Text("¡Hola, forastero!")
 }
 
-// TestGreetBotTime validates /time in isolation, independent of language state,
-// against a fixed clock.
+// TestGreetBotTime runs timeScenario: a scenario dedicated to /time, decoupled
+// from greeting/language concerns, against a fixed clock so the reply is exactly
+// assertable instead of racing the wall clock.
 func TestGreetBotTime(t *testing.T) {
 	fixedNow := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	_, chat := startGreetBot(t, greetbot.WithClock(func() time.Time { return fixedNow }))
 
+	timeScenario(chat, fixedNow)
+}
+
+// timeScenario validates /time in isolation: the bot must return exactly what
+// its clock says, formatted the way greetbot.FormatTime defines.
+func timeScenario(chat *chatwright.Chat, wantNow time.Time) {
 	chat.SendText("/time")
 	chat.ExpectBotMessage().
 		Within(time.Second).
-		Text("03:04:05 UTC")
+		Text(greetbot.FormatTime(wantNow))
 }
 
 // startGreetBot boots Chatwright, runs a real greetbot (configured with opts) on

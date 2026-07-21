@@ -55,6 +55,7 @@ type Message struct {
 	Text       string
 	Actions    [][]Action
 	ReceivedAt time.Time
+	Version    int // 0 for the original send; incremented on each in-place edit
 }
 
 // Emulator is a running fake platform API server. It encodes inbound updates and
@@ -78,6 +79,12 @@ type Emulator interface {
 	// WaitForMessage waits up to timeout for the (consumed+1)-th outbound bot
 	// message to chatID, returning it normalized, or false on timeout.
 	WaitForMessage(chatID int64, consumed int, timeout time.Duration) (*Message, bool)
+
+	// WaitForEdit waits up to timeout for the message identified by
+	// (chatID, messageID) to be edited past afterVersion (i.e. Version >
+	// afterVersion), returning its new content normalized, or false on timeout.
+	// Platforms with no message-edit capability may return false immediately.
+	WaitForEdit(chatID int64, messageID int, afterVersion int, timeout time.Duration) (*Message, bool)
 }
 
 // Platform maps neutral scenario operations onto a concrete chat platform.

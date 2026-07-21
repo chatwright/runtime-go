@@ -3,11 +3,12 @@
 // outbound calls are redirected to whatever Bot API host it is constructed with
 // (Chatwright's emulator in tests, https://api.telegram.org in production).
 //
-// It is intentionally tiny: /start offers a language choice (picking one greets
-// the user in that language and is remembered for the rest of the chat), and
-// /time replies with the current time. The point is to prove a genuine
-// Telegram-protocol bot — parsing real updates, tracking per-chat state, and
-// sending via the real client — can be driven by Chatwright over HTTP.
+// It is intentionally tiny: /start offers a language choice — picking one edits
+// that same message in place, translating it, and is remembered for the rest of
+// the chat — and /time replies with the current time. The point is to prove a
+// genuine Telegram-protocol bot — parsing real updates, tracking per-chat state,
+// editing its own messages, and sending via the real client — can be driven by
+// Chatwright over HTTP.
 package greetbot
 
 import (
@@ -143,8 +144,10 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 		return
 	}
 	b.setLang(cb.Message.Chat.ID, code)
-	reply := tgbotapi.NewMessage(cb.Message.Chat.ID, greetingFor(code))
-	_, _ = b.api.Send(reply)
+	// Edit the language-choice message in place, translating it to the
+	// selected language, rather than sending a new message.
+	edit := tgbotapi.NewEditMessageText(cb.Message.Chat.ID, cb.Message.MessageID, "", greetingFor(code))
+	_, _ = b.api.Send(edit)
 }
 
 func (b *Bot) langFor(chatID int64) string {

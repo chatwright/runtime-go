@@ -32,13 +32,16 @@ func (tgPlatform) Name() string { return "telegram" }
 
 func (tgPlatform) Start() platform.Emulator { return NewEmulator() }
 
-// outgoing is a single Bot API call the bot made to the emulator.
+// outgoing is a single Bot API call the bot made to the emulator. Edits mutate
+// an existing entry in place (text/markup/receivedAt/version), rather than
+// appending a new one, so a message keeps a stable identity across edits.
 type outgoing struct {
 	chatID     int64
 	messageID  int
 	text       string
 	markup     *tgbotapi.InlineKeyboardMarkup
 	receivedAt time.Time
+	version    int // 0 for the original send; incremented on each edit
 }
 
 // Emulator is an in-process HTTP server emulating the Telegram Bot API.
@@ -123,6 +126,8 @@ func (e *Emulator) handle(w http.ResponseWriter, r *http.Request) {
 		writeResult(w, tgbotapi.User{ID: 1, IsBot: true, FirstName: "ChatwrightBot", UserName: "chatwright_bot"})
 	case "sendMessage":
 		e.handleSendMessage(w, r)
+	case "editMessageText":
+		e.handleEditMessageText(w, r)
 	default:
 		// Be lenient: acknowledge any other method (setWebhook, deleteWebhook,
 		// answerCallbackQuery, setMyCommands, ...) so arbitrary bots don't error.
@@ -151,18 +156,67 @@ func (e *Emulator) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleEditMessageText emulates editMessageText: it mutates the identified
+// message in place (text, and markup if a new one was supplied) and bumps its
+// version, so WaitForEdit can observe the change.
+func (e *Emulator) handleEditMessageText(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	chatID := parseChatID(r.FormValue("chat_id"))
+	messageID, _ := strconv.Atoi(r.FormValue("message_id"))
+	text := r.FormValue("text")
+	var markup *tgbotapi.InlineKeyboardMarkup
+	if rm := r.FormValue("reply_markup"); rm != "" {
+		var m tgbotapi.InlineKeyboardMarkup
+		if json.Unmarshal([]byte(rm), &m) == nil {
+			markup = &m
+		}
+	}
+
+	e.mu.Lock()
+	var edited *outgoing
+	for _, c := range e.calls {
+		if c.chatID == chatID && c.messageID == messageID {
+			edited = c
+			break
+		}
+	}
+	if edited == nil {
+		e.mu.Unlock()
+		writeError(w, "message to edit not found")
+		return
+	}
+	edited.text = text
+	if markup != nil {
+		edited.markup = markup
+	}
+	edited.receivedAt = time.Now()
+	edited.version++
+	result := *edited
+	close(e.updated)
+	e.updated = make(chan struct{})
+	e.mu.Unlock()
+
+	writeResult(w, tgbotapi.Message{
+		MessageID: result.messageID,
+		From:      &tgbotapi.User{ID: 1, IsBot: true, FirstName: "ChatwrightBot"},
+		Chat:      &tgbotapi.Chat{ID: result.chatID, Type: "private"},
+		Date:      int(result.receivedAt.Unix()),
+		Text:      result.text,
+	})
+}
+
 // WaitForMessage waits for the (consumed+1)-th outbound message to chatID and
 // returns it as a neutral platform.Message.
 func (e *Emulator) WaitForMessage(chatID int64, consumed int, timeout time.Duration) (*platform.Message, bool) {
 	deadline := time.After(timeout)
 	for {
 		e.mu.Lock()
-		var match *outgoing
+		var result *platform.Message
 		seen := 0
 		for _, c := range e.calls {
 			if c.chatID == chatID {
 				if seen == consumed {
-					match = c
+					result = normalize(c) // built while locked: c is mutable (edits)
 					break
 				}
 				seen++
@@ -171,8 +225,35 @@ func (e *Emulator) WaitForMessage(chatID int64, consumed int, timeout time.Durat
 		ch := e.updated
 		e.mu.Unlock()
 
-		if match != nil {
-			return normalize(match), true
+		if result != nil {
+			return result, true
+		}
+		select {
+		case <-ch:
+		case <-deadline:
+			return nil, false
+		}
+	}
+}
+
+// WaitForEdit waits for the message identified by (chatID, messageID) to be
+// edited past afterVersion.
+func (e *Emulator) WaitForEdit(chatID int64, messageID int, afterVersion int, timeout time.Duration) (*platform.Message, bool) {
+	deadline := time.After(timeout)
+	for {
+		e.mu.Lock()
+		var result *platform.Message
+		for _, c := range e.calls {
+			if c.chatID == chatID && c.messageID == messageID && c.version > afterVersion {
+				result = normalize(c) // built while locked: c is mutable (edits)
+				break
+			}
+		}
+		ch := e.updated
+		e.mu.Unlock()
+
+		if result != nil {
+			return result, true
 		}
 		select {
 		case <-ch:
@@ -190,6 +271,7 @@ func normalize(o *outgoing) *platform.Message {
 		MessageID:  o.messageID,
 		Text:       o.text,
 		ReceivedAt: o.receivedAt,
+		Version:    o.version,
 	}
 	if o.markup != nil {
 		for _, row := range o.markup.InlineKeyboard {
@@ -246,4 +328,10 @@ func parseChatID(s string) int64 {
 func writeResult(w http.ResponseWriter, result any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": result})
+}
+
+// writeError writes a Bot API error envelope {"ok":false,"description":<msg>}.
+func writeError(w http.ResponseWriter, description string) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error_code": 400, "description": description})
 }
