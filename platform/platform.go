@@ -1,0 +1,73 @@
+// Package platform defines the neutral contracts that let a scenario be written
+// once and executed against any chat platform.
+//
+// A scenario drives Chatwright with platform-agnostic verbs (send a text, expect
+// a message, expect an action). Each Platform maps those neutral operations onto
+// a concrete wire protocol (Telegram, WhatsApp, ...) and normalizes the bot's
+// outbound calls back into the neutral Message/Action types below.
+package platform
+
+import "time"
+
+// User is a neutral participant identity within a scenario.
+type User struct {
+	ID        int64
+	FirstName string
+	LastName  string
+	Username  string
+}
+
+// Inbound is a neutral inbound event that a Platform encodes as its own webhook
+// payload before delivery to the bot-under-test.
+type Inbound struct {
+	ChatID    int64
+	User      User
+	Text      string
+	UpdateID  int
+	MessageID int
+}
+
+// Action is a neutral interactive action (a button) captured from a bot message.
+// Telegram inline buttons and WhatsApp interactive replies both normalize to it.
+type Action struct {
+	Label string // user-visible text (Telegram button text / WhatsApp reply title)
+	ID    string // stable identifier (Telegram callback_data / WhatsApp reply id)
+	URL   string // set for link actions
+}
+
+// Message is a neutral bot message captured from a platform's outbound API call.
+type Message struct {
+	Platform   string
+	ChatID     int64
+	Text       string
+	Actions    [][]Action
+	ReceivedAt time.Time
+}
+
+// Emulator is a running fake platform API server. It encodes inbound updates and
+// captures the bot's outbound calls, normalized to the neutral types above.
+type Emulator interface {
+	// BotAPIURL is the base URL the bot-under-test must use for this platform's
+	// API, in place of the real one (api.telegram.org, graph.facebook.com, ...).
+	BotAPIURL() string
+
+	// Close shuts the emulator's HTTP server down.
+	Close()
+
+	// EncodeInboundText encodes a user text message as this platform's webhook
+	// payload, returning the content type and body to POST to the bot's webhook.
+	EncodeInboundText(in Inbound) (contentType string, body []byte)
+
+	// WaitForMessage waits up to timeout for the (consumed+1)-th outbound bot
+	// message to chatID, returning it normalized, or false on timeout.
+	WaitForMessage(chatID int64, consumed int, timeout time.Duration) (*Message, bool)
+}
+
+// Platform maps neutral scenario operations onto a concrete chat platform.
+type Platform interface {
+	// Name is the platform's short identifier, e.g. "telegram" or "whatsapp".
+	Name() string
+
+	// Start boots this platform's emulated API server.
+	Start() Emulator
+}
