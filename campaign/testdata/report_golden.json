@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "goalId": "listus",
+  "goalTitle": "Exercise onboarding",
+  "stopReason": "goal-complete",
+  "steps": 2,
+  "cost": 0.3,
+  "elapsedNanoseconds": 0,
+  "tasks": [
+    {
+      "taskId": "onboarding",
+      "title": "Complete onboarding",
+      "successCriteria": "user completes language selection",
+      "status": "completed",
+      "attempted": true,
+      "failureCount": 0
+    }
+  ],
+  "findings": [],
+  "usage": {
+    "inputTokens": 5,
+    "outputTokens": 2,
+    "cost": 0.3,
+    "callCount": 2
+  }
+}
