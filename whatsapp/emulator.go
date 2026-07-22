@@ -308,17 +308,68 @@ func (e *Emulator) WaitForEdit(int64, int, int, time.Duration) (*platform.Messag
 
 // Transcript renders a chronological, human-readable dump of everything
 // recorded for chatID — inbound user messages, outbound bot messages and
-// interactive-reply clicks — for inclusion in assertion failure messages.
+// interactive-reply clicks — for inclusion in assertion failure messages. It
+// renders from the same structured entries Journal returns, so the two never
+// drift.
 func (e *Emulator) Transcript(chatID int64) string {
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	entries := e.journalLocked(chatID)
+	e.mu.Unlock()
+	return renderTranscript(chatID, entries)
+}
 
-	var lines []string
+// Journal returns chatID's chronological, structured journal entries — the
+// same events Transcript renders as prose. The WhatsApp Cloud API has no
+// message-edit endpoint and this text-first MVP-scope emulator does not yet
+// capture outbound interactive actions (see the package doc), so Version is
+// always 0, Actions is always empty and JournalEntryUncaptured never occurs.
+func (e *Emulator) Journal(chatID int64) ([]platform.JournalEntry, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.journalLocked(chatID), nil
+}
+
+// journalLocked returns chatID's structured journal entries in chronological
+// order. Caller must hold e.mu.
+func (e *Emulator) journalLocked(chatID int64) []platform.JournalEntry {
+	entries := make([]platform.JournalEntry, 0, len(e.journal))
 	for _, en := range e.journal {
 		if en.chatID != chatID {
 			continue
 		}
-		lines = append(lines, renderEntry(en))
+		entries = append(entries, toPlatformEntry(en))
+	}
+	return entries
+}
+
+// toPlatformEntry converts an internal journalEntry into the platform-neutral
+// platform.JournalEntry Journal exposes.
+func toPlatformEntry(en journalEntry) platform.JournalEntry {
+	pe := platform.JournalEntry{
+		MessageID:    en.messageID,
+		RefMessageID: en.refMessageID,
+		Text:         en.text,
+		At:           en.at,
+	}
+	if en.dir == fromBot {
+		pe.Direction = platform.DirectionBot
+	} else {
+		pe.Direction = platform.DirectionUser
+	}
+	if en.kind == kindCallback {
+		pe.Kind = platform.JournalEntryAction
+	} else {
+		pe.Kind = platform.JournalEntryMessage
+	}
+	return pe
+}
+
+// renderTranscript renders entries (chatID's structured journal, in
+// chronological order) as the prose Transcript returns.
+func renderTranscript(chatID int64, entries []platform.JournalEntry) string {
+	var lines []string
+	for _, en := range entries {
+		lines = append(lines, renderJournalEntry(en))
 	}
 	if len(lines) == 0 {
 		return fmt.Sprintf("chat %d transcript: (empty — no messages yet)", chatID)
@@ -326,16 +377,16 @@ func (e *Emulator) Transcript(chatID int64) string {
 	return fmt.Sprintf("chat %d transcript: %s", chatID, strings.Join(lines, " / "))
 }
 
-// renderEntry renders one transcript line for en.
-func renderEntry(en journalEntry) string {
-	if en.kind == kindCallback {
-		return fmt.Sprintf("[user] clicked %q on message %d", en.text, en.refMessageID)
+// renderJournalEntry renders one transcript line for en.
+func renderJournalEntry(en platform.JournalEntry) string {
+	if en.Kind == platform.JournalEntryAction {
+		return fmt.Sprintf("[user] clicked %q on message %d", en.Text, en.RefMessageID)
 	}
 	who := "user"
-	if en.dir == fromBot {
+	if en.Direction == platform.DirectionBot {
 		who = "bot"
 	}
-	return fmt.Sprintf("[%d %s] %s", en.messageID, who, en.text)
+	return fmt.Sprintf("[%d %s] %s", en.MessageID, who, en.Text)
 }
 
 // normalize converts a journal entry into a neutral message.

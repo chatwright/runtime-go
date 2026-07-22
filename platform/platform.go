@@ -39,6 +39,53 @@ type Message struct {
 	Version    int // 0 for the original send; incremented on each in-place edit
 }
 
+// Direction identifies which side of a conversation produced a JournalEntry.
+type Direction int
+
+const (
+	DirectionUser Direction = iota
+	DirectionBot
+)
+
+// JournalEntryKind distinguishes what a JournalEntry records.
+type JournalEntryKind int
+
+const (
+	// JournalEntryMessage is an inbound user message or an outbound bot
+	// send/edit; MessageID, Version, Text and Actions apply.
+	JournalEntryMessage JournalEntryKind = iota
+	// JournalEntryAction is an inbound action activation (a button click or
+	// equivalent interactive reply); RefMessageID names the message it
+	// targeted, Text carries the platform action identifier that was
+	// activated.
+	JournalEntryAction
+	// JournalEntryUncaptured records a bot API call the emulator does not
+	// simulate — it produced no observable chat content; Method names the
+	// call.
+	JournalEntryUncaptured
+)
+
+// JournalEntry is one chronological, structured record from a chat's
+// append-only journal — the same events an Emulator's Transcript renders as
+// human-readable prose, given directly to callers (the observe package's
+// Engine, diagnostics) that need to reason about them structurally instead of
+// parsing rendered text. It carries the emulator's full internal record,
+// including platform-native identifiers and action data (e.g. Telegram
+// callback_data via Actions[*][*].ID) — this is the developer/trace-level
+// seam, not the actor-facing observation surface; the observe package is
+// where raw platform payloads are dropped before an actor ever sees them.
+type JournalEntry struct {
+	Direction    Direction
+	Kind         JournalEntryKind
+	MessageID    int // logical message identity, shared by inbound/outbound entries in this chat; 0 when Kind has no message identity of its own
+	RefMessageID int // JournalEntryAction only: the message the action targeted
+	Version      int // JournalEntryMessage only: 0 = original send/inbound, N = the Nth edit
+	Text         string
+	Actions      [][]Action // JournalEntryMessage only: actions attached to this entry, in platform row/col layout
+	Method       string     // JournalEntryUncaptured only: the Bot API method name that was called
+	At           time.Time
+}
+
 // Emulator is a running fake platform API server. It owns everything about
 // getting a user action to the bot-under-test and capturing what comes back:
 // building the platform-native update, assigning it identity (message and
@@ -96,6 +143,13 @@ type Emulator interface {
 	// recorded for chatID — inbound and outbound alike, edits shown as their
 	// current version — for inclusion in assertion failure messages.
 	Transcript(chatID int64) string
+
+	// Journal returns chatID's chronological, structured journal entries —
+	// the same events Transcript renders as prose, given directly to callers
+	// (the observe package's Engine, diagnostics) that need to reason about
+	// them structurally. An implementation that cannot produce a structured
+	// journal returns a clear not-supported error and a nil slice.
+	Journal(chatID int64) ([]JournalEntry, error)
 }
 
 // Platform maps neutral scenario operations onto a concrete chat platform.

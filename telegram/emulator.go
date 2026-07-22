@@ -518,25 +518,85 @@ func (e *Emulator) WaitForEdit(chatID int64, messageID int, afterVersion int, ti
 // recorded for chatID — inbound user messages, outbound bot messages (shown
 // at their current, possibly-edited text) and button clicks — for inclusion
 // in assertion failure messages. It is the emulator's own record, independent
-// of what any BotMessage handle has consumed or asserted on.
+// of what any BotMessage handle has consumed or asserted on. It renders from
+// the same structured entries Journal returns, so the two never drift.
 func (e *Emulator) Transcript(chatID int64) string {
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	entries := e.journalLocked(chatID)
+	e.mu.Unlock()
+	return renderTranscript(chatID, entries)
+}
 
-	var lines []string
-	posByID := map[int]int{}
+// Journal returns chatID's chronological, structured journal entries — the
+// same events Transcript renders as prose, given directly to callers (the
+// observe package's Engine, diagnostics) that need to reason about them
+// structurally.
+func (e *Emulator) Journal(chatID int64) ([]platform.JournalEntry, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.journalLocked(chatID), nil
+}
+
+// journalLocked returns chatID's structured journal entries in chronological
+// order. Caller must hold e.mu.
+func (e *Emulator) journalLocked(chatID int64) []platform.JournalEntry {
+	entries := make([]platform.JournalEntry, 0, len(e.journal))
 	for _, en := range e.journal {
 		if en.chatID != chatID {
 			continue
 		}
-		if en.kind == kindText {
-			if i, ok := posByID[en.messageID]; ok {
-				lines[i] = renderEntry(en) // an edit: update this message's line in place, no new line
+		entries = append(entries, toPlatformEntry(en))
+	}
+	return entries
+}
+
+// toPlatformEntry converts an internal journalEntry into the platform-neutral
+// platform.JournalEntry Journal exposes — the same event, described without
+// this package's private wire representation (tgbotapi markup becomes
+// neutral Actions; method/token wire detail stays only on the Uncaptured
+// case, where it is the only content there is).
+func toPlatformEntry(en journalEntry) platform.JournalEntry {
+	pe := platform.JournalEntry{
+		MessageID:    en.messageID,
+		RefMessageID: en.refMessageID,
+		Version:      en.version,
+		Text:         en.text,
+		At:           en.at,
+	}
+	if en.dir == fromBot {
+		pe.Direction = platform.DirectionBot
+	} else {
+		pe.Direction = platform.DirectionUser
+	}
+	switch en.kind {
+	case kindCallback:
+		pe.Kind = platform.JournalEntryAction
+	case kindUnsupported:
+		pe.Kind = platform.JournalEntryUncaptured
+		pe.Method = en.method
+	default:
+		pe.Kind = platform.JournalEntryMessage
+		pe.Actions = actionsFromMarkup(en.markup)
+	}
+	return pe
+}
+
+// renderTranscript renders entries (chatID's structured journal, in
+// chronological order) as the prose Transcript returns: an edit updates its
+// message's existing line in place instead of appending a new one, so a
+// message keeps its original conversational position.
+func renderTranscript(chatID int64, entries []platform.JournalEntry) string {
+	var lines []string
+	posByID := map[int]int{}
+	for _, en := range entries {
+		if en.Kind == platform.JournalEntryMessage {
+			if i, ok := posByID[en.MessageID]; ok {
+				lines[i] = renderJournalEntry(en) // an edit: update this message's line in place, no new line
 				continue
 			}
-			posByID[en.messageID] = len(lines)
+			posByID[en.MessageID] = len(lines)
 		}
-		lines = append(lines, renderEntry(en))
+		lines = append(lines, renderJournalEntry(en))
 	}
 
 	if len(lines) == 0 {
@@ -545,45 +605,54 @@ func (e *Emulator) Transcript(chatID int64) string {
 	return fmt.Sprintf("chat %d transcript: %s", chatID, strings.Join(lines, " / "))
 }
 
-// renderEntry renders one transcript line for en.
-func renderEntry(en journalEntry) string {
-	switch en.kind {
-	case kindCallback:
-		return fmt.Sprintf("[user] clicked %q on message %d", en.text, en.refMessageID)
-	case kindUnsupported:
-		return fmt.Sprintf("bot also called %s (uncaptured)", en.method)
+// renderJournalEntry renders one transcript line for en.
+func renderJournalEntry(en platform.JournalEntry) string {
+	switch en.Kind {
+	case platform.JournalEntryAction:
+		return fmt.Sprintf("[user] clicked %q on message %d", en.Text, en.RefMessageID)
+	case platform.JournalEntryUncaptured:
+		return fmt.Sprintf("bot also called %s (uncaptured)", en.Method)
 	default:
 		who := "user"
-		if en.dir == fromBot {
+		if en.Direction == platform.DirectionBot {
 			who = "bot"
 		}
-		if en.version > 0 {
-			return fmt.Sprintf("[%d %s] %s (v%d, edited)", en.messageID, who, en.text, en.version+1)
+		if en.Version > 0 {
+			return fmt.Sprintf("[%d %s] %s (v%d, edited)", en.MessageID, who, en.Text, en.Version+1)
 		}
-		return fmt.Sprintf("[%d %s] %s", en.messageID, who, en.text)
+		return fmt.Sprintf("[%d %s] %s", en.MessageID, who, en.Text)
 	}
+}
+
+// actionsFromMarkup converts a Telegram inline keyboard into neutral action
+// rows, shared by normalize (platform.Message) and toPlatformEntry
+// (platform.JournalEntry).
+func actionsFromMarkup(markup *tgbotapi.InlineKeyboardMarkup) [][]platform.Action {
+	if markup == nil {
+		return nil
+	}
+	actions := make([][]platform.Action, 0, len(markup.InlineKeyboard))
+	for _, row := range markup.InlineKeyboard {
+		arow := make([]platform.Action, 0, len(row))
+		for _, b := range row {
+			arow = append(arow, platform.Action{Label: b.Text, ID: b.CallbackData, URL: b.URL})
+		}
+		actions = append(actions, arow)
+	}
+	return actions
 }
 
 // normalize converts a journal entry into a neutral message.
 func normalize(en *journalEntry) *platform.Message {
-	m := &platform.Message{
+	return &platform.Message{
 		Platform:   "telegram",
 		ChatID:     en.chatID,
 		MessageID:  en.messageID,
 		Text:       en.text,
 		ReceivedAt: en.at,
 		Version:    en.version,
+		Actions:    actionsFromMarkup(en.markup),
 	}
-	if en.markup != nil {
-		for _, row := range en.markup.InlineKeyboard {
-			arow := make([]platform.Action, 0, len(row))
-			for _, b := range row {
-				arow = append(arow, platform.Action{Label: b.Text, ID: b.CallbackData, URL: b.URL})
-			}
-			m.Actions = append(m.Actions, arow)
-		}
-	}
-	return m
 }
 
 // parsePath splits "/bot<token>/<method>" into token and method.
