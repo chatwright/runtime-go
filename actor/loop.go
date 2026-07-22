@@ -54,6 +54,18 @@ type Config struct {
 	// every LoopEvent.At. Must not be nil; pass the same clock given to the
 	// Loop's goal.CampaignState so timestamps and budget decisions agree.
 	Now func() time.Time
+
+	// DisableObservationRetention turns off the Loop's retention of every
+	// observe.Observation it produces (see Loop.Observations). Retention is
+	// ON by default (the zero value is false) — a campaign's entire purpose
+	// is producing evidence, and the retained observation bodies are what
+	// let a campaign.Bundle stay self-contained: a player can show exactly
+	// what the actor saw at each step without re-deriving it from a
+	// transcript. Set this true only when a campaign is long enough, or
+	// memory-bounded enough, that holding every Observation body for its
+	// whole run is not affordable; Loop.Events (and campaign.Report) are
+	// unaffected either way, since neither depends on retention.
+	DisableObservationRetention bool
 }
 
 // withDefaults returns cfg with zero-value tunables replaced by their
@@ -113,6 +125,12 @@ type Loop struct {
 	events              []LoopEvent
 	consumedBotMessages int // mirrors chatwright.Chat's own WaitForMessage cursor
 	lastBotMessage      *platform.Message
+
+	// observations retains every observe.Observation this Loop has produced
+	// (see observeAndSync), keyed by its Sequence, when
+	// Config.DisableObservationRetention is false. Always non-nil so
+	// Observations can range over it unconditionally.
+	observations map[int64]observe.Observation
 }
 
 // NewLoop constructs a Loop. campaign must have been created from goalDef
@@ -134,12 +152,30 @@ func NewLoop(provider Provider, engine *observe.Engine, actuator Actuator, campa
 	if err != nil {
 		return nil, err
 	}
-	return &Loop{provider: provider, engine: engine, actuator: actuator, campaign: campaign, goalDef: goalDef, cfg: cfg}, nil
+	return &Loop{
+		provider: provider, engine: engine, actuator: actuator, campaign: campaign, goalDef: goalDef, cfg: cfg,
+		observations: make(map[int64]observe.Observation),
+	}, nil
 }
 
 // Events returns a detached copy of every LoopEvent recorded so far, across
 // every task this Loop has run.
 func (l *Loop) Events() []LoopEvent { return append([]LoopEvent(nil), l.events...) }
+
+// Observations returns a detached copy of every observe.Observation this
+// Loop has produced so far (every observe.Engine.Observe call
+// observeAndSync made — including the post-action re-observation
+// observedEffect performs, not only the ones a LoopEvent.ObservationSequence
+// points at), keyed by its Sequence. It is always empty, never nil, so a
+// caller can range over it unconditionally — either because nothing has
+// been observed yet, or because Config.DisableObservationRetention is true.
+func (l *Loop) Observations() map[int64]observe.Observation {
+	out := make(map[int64]observe.Observation, len(l.observations))
+	for seq, obs := range l.observations {
+		out[seq] = obs
+	}
+	return out
+}
 
 // taskByID finds goalDef's Task with the given id.
 func (l *Loop) taskByID(id string) (goal.Task, bool) {
@@ -298,11 +334,18 @@ func (l *Loop) buildPrompt(task goal.Task, obs *observe.Observation) Prompt {
 
 // observeAndSync calls observe.Engine.Observe and keeps the loop's raw
 // (platform-native) view of the latest bot message in sync with it — see
-// refreshRawBotMessage.
+// refreshRawBotMessage. It is the loop's single choke point for every
+// observe.Engine.Observe call (the initial per-iteration observation and
+// observedEffect's post-action re-observation both go through it), which is
+// why retention (Config.DisableObservationRetention, Observations) is
+// implemented here rather than at each call site.
 func (l *Loop) observeAndSync() (*observe.Observation, error) {
 	obs, err := l.engine.Observe()
 	if err != nil {
 		return nil, fmt.Errorf("actor: observe: %w", err)
+	}
+	if !l.cfg.DisableObservationRetention {
+		l.observations[obs.Sequence] = *obs
 	}
 	if err := l.refreshRawBotMessage(obs); err != nil {
 		return nil, err

@@ -1,0 +1,265 @@
+{
+  "schemaVersion": 1,
+  "goal": {
+    "ID": "listus",
+    "Title": "Exercise onboarding",
+    "Description": "",
+    "Tasks": [
+      {
+        "ID": "onboarding",
+        "Title": "Complete onboarding",
+        "DependsOn": null,
+        "SuccessCriteria": "user completes language selection",
+        "Milestones": null
+      }
+    ],
+    "Constraints": null,
+    "Budgets": {
+      "MaxSteps": 0,
+      "MaxDuration": 0,
+      "MaxRepeatedFailures": 0,
+      "MaxCost": null
+    }
+  },
+  "chats": [
+    {
+      "chatId": 42,
+      "entries": [
+        {
+          "Direction": 0,
+          "Kind": 0,
+          "MessageID": 1,
+          "RefMessageID": 0,
+          "Version": 0,
+          "Text": "Hi",
+          "Actions": null,
+          "Method": "",
+          "At": "2026-07-22T12:00:00Z"
+        },
+        {
+          "Direction": 1,
+          "Kind": 0,
+          "MessageID": 2,
+          "RefMessageID": 0,
+          "Version": 0,
+          "Text": "Choose your language:",
+          "Actions": [
+            [
+              {
+                "Label": "English",
+                "ID": "act1",
+                "URL": ""
+              }
+            ]
+          ],
+          "Method": "",
+          "At": "2026-07-22T12:00:01Z"
+        },
+        {
+          "Direction": 0,
+          "Kind": 1,
+          "MessageID": 0,
+          "RefMessageID": 2,
+          "Version": 0,
+          "Text": "act1",
+          "Actions": null,
+          "Method": "",
+          "At": "2026-07-22T12:00:02Z"
+        },
+        {
+          "Direction": 1,
+          "Kind": 0,
+          "MessageID": 2,
+          "RefMessageID": 0,
+          "Version": 1,
+          "Text": "Howdy stranger",
+          "Actions": null,
+          "Method": "",
+          "At": "2026-07-22T12:00:03Z"
+        }
+      ]
+    }
+  ],
+  "observations": [
+    {
+      "sequence": 1,
+      "observation": {
+        "Sequence": 1,
+        "PreviousSequence": 0,
+        "Chat": {
+          "ChatID": 42
+        },
+        "Messages": [
+          {
+            "ID": "msg1",
+            "Version": 0,
+            "Edited": false,
+            "Actor": 0,
+            "Text": "Hi",
+            "Actions": null
+          }
+        ],
+        "Changes": null
+      }
+    },
+    {
+      "sequence": 2,
+      "observation": {
+        "Sequence": 2,
+        "PreviousSequence": 1,
+        "Chat": {
+          "ChatID": 42
+        },
+        "Messages": [
+          {
+            "ID": "msg1",
+            "Version": 0,
+            "Edited": false,
+            "Actor": 0,
+            "Text": "Hi",
+            "Actions": null
+          },
+          {
+            "ID": "msg2",
+            "Version": 0,
+            "Edited": false,
+            "Actor": 1,
+            "Text": "Choose your language:",
+            "Actions": [
+              {
+                "ID": "act1",
+                "Label": "English",
+                "SeenAt": 2
+              }
+            ]
+          }
+        ],
+        "Changes": [
+          {
+            "Kind": 0,
+            "MessageID": "msg2",
+            "Actor": 1,
+            "PreviousVersion": 0,
+            "Version": 0
+          }
+        ]
+      }
+    }
+  ],
+  "events": [
+    {
+      "Index": 0,
+      "At": "2026-07-22T12:00:00Z",
+      "TaskID": "onboarding",
+      "ObservationSequence": 1,
+      "Proposal": {
+        "Kind": "send-text",
+        "Text": "Hi",
+        "ActionID": "",
+        "ObservationSequence": 0,
+        "Rationale": "start the conversation"
+      },
+      "Usage": {
+        "Model": "scripted-v1",
+        "InputTokens": 5,
+        "OutputTokens": 2,
+        "Latency": 0,
+        "cost": 0.3
+      },
+      "Validation": {
+        "Checked": false,
+        "Verdict": 0,
+        "Reason": ""
+      },
+      "Action": {
+        "Kind": 1,
+        "Detail": ""
+      }
+    },
+    {
+      "Index": 1,
+      "At": "2026-07-22T12:00:01Z",
+      "TaskID": "onboarding",
+      "ObservationSequence": 2,
+      "Proposal": {
+        "Kind": "task-done",
+        "Text": "",
+        "ActionID": "",
+        "ObservationSequence": 0,
+        "Rationale": "onboarding confirmed"
+      },
+      "Usage": {
+        "Model": "",
+        "InputTokens": 0,
+        "OutputTokens": 0,
+        "Latency": 0
+      },
+      "Validation": {
+        "Checked": false,
+        "Verdict": 0,
+        "Reason": ""
+      },
+      "Action": {
+        "Kind": 4,
+        "Detail": ""
+      }
+    }
+  ],
+  "report": {
+    "schemaVersion": 1,
+    "goalId": "listus",
+    "goalTitle": "Exercise onboarding",
+    "stopReason": "goal-complete",
+    "steps": 2,
+    "cost": 0.3,
+    "elapsedNanoseconds": 0,
+    "tasks": [
+      {
+        "taskId": "onboarding",
+        "title": "Complete onboarding",
+        "successCriteria": "user completes language selection",
+        "status": "completed",
+        "attempted": true,
+        "failureCount": 0
+      }
+    ],
+    "findings": [],
+    "usage": {
+      "inputTokens": 5,
+      "outputTokens": 2,
+      "cost": 0.3,
+      "callCount": 2
+    }
+  },
+  "evidence": [
+    {
+      "Name": "onboarding-language",
+      "AttachmentPoint": "after-message",
+      "Holder": "listusdb",
+      "Query": "SELECT language FROM users WHERE id = @userId",
+      "Params": {
+        "userId": "u1"
+      },
+      "Outcome": "passed",
+      "FailureMessage": "",
+      "TotalRows": 1,
+      "ReturnedRows": 1,
+      "Truncated": false,
+      "Preview": [
+        {
+          "language": "en"
+        }
+      ],
+      "RedactedFields": null,
+      "ExcludedFields": null
+    }
+  ],
+  "metadata": {
+    "createdAt": "2026-07-22T12:00:00Z",
+    "platform": "telegram",
+    "endpointProfile": "platform-emulated",
+    "modelIds": [
+      "scripted-v1"
+    ]
+  }
+}
