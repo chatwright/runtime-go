@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright"
-	"github.com/chatwright/chatwright/whatsapp"
+	"github.com/chatwright/chatwright/chatwrite"
+	"github.com/chatwright/chatwright/chatwrite/whatsapp"
 )
 
 // The greeter bots below are deliberately framework-agnostic: plain net/http, no
@@ -147,6 +147,15 @@ func TestTelegramActions(t *testing.T) {
 	msg.ExpectAction(0, 0).
 		Label("My events").
 		ID("my-events")
+
+	snapshot := msg.Snapshot()
+	if snapshot.Text != "Howdy stranger" || len(snapshot.Actions) != 1 || len(snapshot.Actions[0]) != 1 {
+		t.Fatalf("snapshot = %+v", snapshot)
+	}
+	snapshot.Actions[0][0].Label = "changed by caller"
+	if got := msg.Snapshot().Actions[0][0].Label; got != "My events" {
+		t.Fatalf("snapshot mutated message action label to %q", got)
+	}
 }
 
 // TestTelegramClick clicks an inline button and asserts the follow-up reply,

@@ -3,7 +3,7 @@ package chatwright
 import (
 	"time"
 
-	"github.com/chatwright/chatwright/platform"
+	"github.com/chatwright/chatwright/chatwrite/platform"
 )
 
 // BotMessage is a fluent handle to a message the bot sent. Assertion methods
@@ -106,6 +106,20 @@ func (m *BotMessage) ExpectEdited() *BotMessage {
 func (m *BotMessage) Metrics() Metrics {
 	m.resolve()
 	return Metrics{Latency: m.latency}
+}
+
+// Snapshot returns an immutable observation of the resolved bot message.
+// Nested action rows are detached from the emulator's mutable message state,
+// so callers can inspect transport output without changing later assertions.
+func (m *BotMessage) Snapshot() platform.Message {
+	m.chat.cw.t.Helper()
+	m.resolve()
+	snapshot := *m.msg
+	snapshot.Actions = make([][]platform.Action, len(m.msg.Actions))
+	for i, row := range m.msg.Actions {
+		snapshot.Actions[i] = append([]platform.Action(nil), row...)
+	}
+	return snapshot
 }
 
 // Metrics are first-class measurements captured for a bot message.
