@@ -40,29 +40,33 @@ type Message struct {
 }
 
 // Direction identifies which side of a conversation produced a JournalEntry.
-type Direction int
+// It is a string type, not an int enum, so a JournalEntry marshals to
+// human-readable JSON (see AGENTS.md's "JSON artefacts carry human-readable
+// string constants" convention) rather than a bare, meaningless integer.
+type Direction string
 
 const (
-	DirectionUser Direction = iota
-	DirectionBot
+	DirectionUser Direction = "user"
+	DirectionBot  Direction = "bot"
 )
 
-// JournalEntryKind distinguishes what a JournalEntry records.
-type JournalEntryKind int
+// JournalEntryKind distinguishes what a JournalEntry records. It is a string
+// type for the same reason as Direction — see Direction's doc comment.
+type JournalEntryKind string
 
 const (
 	// JournalEntryMessage is an inbound user message or an outbound bot
 	// send/edit; MessageID, Version, Text and Actions apply.
-	JournalEntryMessage JournalEntryKind = iota
+	JournalEntryMessage JournalEntryKind = "message"
 	// JournalEntryAction is an inbound action activation (a button click or
 	// equivalent interactive reply); RefMessageID names the message it
 	// targeted, Text carries the platform action identifier that was
 	// activated.
-	JournalEntryAction
+	JournalEntryAction JournalEntryKind = "action"
 	// JournalEntryUncaptured records a bot API call the emulator does not
 	// simulate — it produced no observable chat content; Method names the
 	// call.
-	JournalEntryUncaptured
+	JournalEntryUncaptured JournalEntryKind = "uncaptured"
 )
 
 // JournalEntry is one chronological, structured record from a chat's

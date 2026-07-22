@@ -51,54 +51,40 @@ type ValidationOutcome struct {
 }
 
 // ActionOutcomeKind classifies what happened when the loop acted on a
-// proposal, or why it did not act at all.
-type ActionOutcomeKind int
+// proposal, or why it did not act at all. It is a string type, not an int
+// enum, so it marshals to human-readable JSON (see AGENTS.md's "JSON
+// artefacts carry human-readable string constants" convention) rather than a
+// bare, meaningless integer.
+type ActionOutcomeKind string
 
 // Action outcome kinds. See ActionOutcome.
 const (
 	// ActionSkippedInvalid: the proposal failed validation (a stale click)
 	// or was malformed; the loop never submitted anything to the platform.
-	ActionSkippedInvalid ActionOutcomeKind = iota
+	ActionSkippedInvalid ActionOutcomeKind = "skipped-invalid"
 	// ActionExecuted: the proposed action was submitted to the platform and
 	// produced an observable change (a new message, an edit, or an
 	// actions-changed update).
-	ActionExecuted
+	ActionExecuted ActionOutcomeKind = "executed"
 	// ActionExecutedNoEffect: the proposed action was submitted, but the
 	// next observation showed no change at all.
-	ActionExecutedNoEffect
+	ActionExecutedNoEffect ActionOutcomeKind = "executed-no-effect"
 	// ActionResolutionFailed: a freshly validated proposal that the loop
 	// could not resolve to a concrete platform action — e.g. no button on
 	// the current message carries the validated action's label (see Loop's
 	// single-live-surface scoping note). This counts as a task failure
 	// (goal.CampaignState.RecordFailure).
-	ActionResolutionFailed
+	ActionResolutionFailed ActionOutcomeKind = "resolution-failed"
 	// ActionTaskCompleted: a ProposeTaskDone proposal was accepted;
 	// goal.CampaignState.Complete was called for the task.
-	ActionTaskCompleted
+	ActionTaskCompleted ActionOutcomeKind = "task-completed"
 	// ActionTaskGivenUp: a ProposeGiveUp proposal was accepted;
 	// goal.CampaignState.Fail was called for the task.
-	ActionTaskGivenUp
+	ActionTaskGivenUp ActionOutcomeKind = "task-given-up"
 )
 
 // String renders k for diagnostics, test failure messages and reports.
-func (k ActionOutcomeKind) String() string {
-	switch k {
-	case ActionSkippedInvalid:
-		return "skipped-invalid"
-	case ActionExecuted:
-		return "executed"
-	case ActionExecutedNoEffect:
-		return "executed-no-effect"
-	case ActionResolutionFailed:
-		return "resolution-failed"
-	case ActionTaskCompleted:
-		return "task-completed"
-	case ActionTaskGivenUp:
-		return "task-given-up"
-	default:
-		return "unknown-action-outcome"
-	}
-}
+func (k ActionOutcomeKind) String() string { return string(k) }
 
 // ActionOutcome is what actually happened when the loop tried to act on a
 // Proposal.

@@ -2,7 +2,7 @@
   "providerConfig": "example-provider model=example-scripted-v1",
   "entries": [
     {
-      "key": "c15d67b1efcc4d7c9c4b8278b8556c4ad702244f1886c706d72b059681c3a138",
+      "key": "426c806591c037410a3c22bac3180c8c8a546d93b38061c7aa9d067c92057c80",
       "promptSummary": "goal=listus-shopping-list task=add-items observation#2 messages=1 history=0",
       "proposal": {
         "Kind": "send-text",

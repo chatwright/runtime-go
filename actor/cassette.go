@@ -13,37 +13,29 @@ import (
 )
 
 // Mode selects a CassetteProvider's record/replay behaviour. See
-// NewCassetteProvider.
-type Mode int
+// NewCassetteProvider. It is a string type, not an int enum, so it marshals
+// to human-readable JSON and prints readably in diagnostics (see AGENTS.md's
+// "JSON artefacts carry human-readable string constants" convention) rather
+// than a bare, meaningless integer.
+type Mode string
 
 // Cassette modes. See Mode.
 const (
 	// ModeLive calls the wrapped Provider directly and performs no cassette
 	// I/O at all — exploratory only, never used in CI.
-	ModeLive Mode = iota
+	ModeLive Mode = "live"
 	// ModeRecord calls the wrapped (live) Provider and appends every
 	// Propose call's prompt/outcome to the cassette; call Cassette then
 	// Cassette.Save to persist it afterwards.
-	ModeRecord
+	ModeRecord Mode = "record"
 	// ModeReplay never calls the wrapped Provider: every Propose call is
 	// served from the cassette, and a cache miss is an error — the CI
 	// default, at zero token cost.
-	ModeReplay
+	ModeReplay Mode = "replay"
 )
 
 // String renders m for diagnostics and error messages.
-func (m Mode) String() string {
-	switch m {
-	case ModeLive:
-		return "live"
-	case ModeRecord:
-		return "record"
-	case ModeReplay:
-		return "replay"
-	default:
-		return "unknown-mode"
-	}
-}
+func (m Mode) String() string { return string(m) }
 
 // ErrCassetteCacheMiss means a ModeReplay CassetteProvider was asked to
 // propose for a prompt its cassette has no recorded entry for.

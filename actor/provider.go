@@ -63,57 +63,29 @@ type Prompt struct {
 	History []LoopEvent
 }
 
-// ProposalKind is the typed shape of a Provider's proposed action.
-type ProposalKind int
+// ProposalKind is the typed shape of a Provider's proposed action. It is a
+// string type, not an int enum, so it marshals to human-readable JSON — in
+// cassette files and everywhere else — rather than a bare, meaningless
+// integer (see AGENTS.md's "JSON artefacts carry human-readable string
+// constants" convention).
+type ProposalKind string
 
 // Proposal kinds. See Proposal.
 const (
 	// ProposeSendText: send free text as the user.
-	ProposeSendText ProposalKind = iota
+	ProposeSendText ProposalKind = "send-text"
 	// ProposeClick: activate a previously observed AvailableAction by its
 	// opaque ID (Proposal.ActionID), as seen at Proposal.ObservationSequence.
-	ProposeClick
+	ProposeClick ProposalKind = "click"
 	// ProposeTaskDone: the active task's success criteria are met.
-	ProposeTaskDone
+	ProposeTaskDone ProposalKind = "task-done"
 	// ProposeGiveUp: the active task cannot be completed; stop attempting it.
-	ProposeGiveUp
+	ProposeGiveUp ProposalKind = "give-up"
 )
 
 // String renders k for diagnostics, test failure messages and cassette
 // files.
-func (k ProposalKind) String() string {
-	switch k {
-	case ProposeSendText:
-		return "send-text"
-	case ProposeClick:
-		return "click"
-	case ProposeTaskDone:
-		return "task-done"
-	case ProposeGiveUp:
-		return "give-up"
-	default:
-		return "unknown-proposal-kind"
-	}
-}
-
-// MarshalJSON renders k as its String() form, so cassette files stay
-// human-readable and reviewable in a PR diff rather than showing a bare int.
-func (k ProposalKind) MarshalJSON() ([]byte, error) { return marshalStringer(k) }
-
-// UnmarshalJSON parses k from its String() form.
-func (k *ProposalKind) UnmarshalJSON(data []byte) error {
-	s, err := unmarshalString(data)
-	if err != nil {
-		return err
-	}
-	for _, candidate := range []ProposalKind{ProposeSendText, ProposeClick, ProposeTaskDone, ProposeGiveUp} {
-		if candidate.String() == s {
-			*k = candidate
-			return nil
-		}
-	}
-	return fmtUnknownEnum("actor: unknown proposal kind", s)
-}
+func (k ProposalKind) String() string { return string(k) }
 
 // Proposal is a Provider's typed intent for the next action, plus its
 // free-text rationale. The loop validates and executes it — see Loop.

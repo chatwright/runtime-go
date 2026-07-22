@@ -21,8 +21,6 @@
 // observe-plan-act-validate actor loop, which is not wired into this package.
 package observe
 
-import "fmt"
-
 // ChatRef identifies the chat an Observation projects. It carries
 // Chatwright's own chat identity (see chatwright.Chat.PrivateChat) — never a
 // raw platform chat ID scraped from the wire.
@@ -30,21 +28,19 @@ type ChatRef struct {
 	ChatID int64
 }
 
-// Actor identifies which side of a conversation produced a VisibleMessage.
-type Actor int
+// Actor identifies which side of a conversation produced a VisibleMessage. It
+// is a string type, not an int enum, so it marshals to human-readable JSON
+// (see AGENTS.md's "JSON artefacts carry human-readable string constants"
+// convention) rather than a bare, meaningless integer.
+type Actor string
 
 const (
-	ActorUser Actor = iota
-	ActorBot
+	ActorUser Actor = "user"
+	ActorBot  Actor = "bot"
 )
 
 // String renders a for diagnostics and test failure messages.
-func (a Actor) String() string {
-	if a == ActorBot {
-		return "bot"
-	}
-	return "user"
-}
+func (a Actor) String() string { return string(a) }
 
 // VisibleMessage is one user-visible logical message: stable identity across
 // edits, a monotonic version and an edited flag, plus the actions currently
@@ -72,33 +68,25 @@ type AvailableAction struct {
 	SeenAt int64  // the Observation.Sequence this action was (re)issued at; copy this into an ActionProposal
 }
 
-// ChangeKind classifies one entry in an Observation's Changes feed.
-type ChangeKind int
+// ChangeKind classifies one entry in an Observation's Changes feed. It is a
+// string type, not an int enum, so it marshals to human-readable JSON (see
+// AGENTS.md's "JSON artefacts carry human-readable string constants"
+// convention) rather than a bare, meaningless integer.
+type ChangeKind string
 
 const (
 	// ChangeNewMessage: a logical message not present in the Engine's
 	// previous Observation now exists.
-	ChangeNewMessage ChangeKind = iota
+	ChangeNewMessage ChangeKind = "new-message"
 	// ChangeMessageEdited: an existing logical message's Version advanced.
-	ChangeMessageEdited
+	ChangeMessageEdited ChangeKind = "edited-message"
 	// ChangeActionsChanged: an existing logical message's available actions
 	// changed without its Version advancing.
-	ChangeActionsChanged
+	ChangeActionsChanged ChangeKind = "actions-changed"
 )
 
 // String renders k for diagnostics and test failure messages.
-func (k ChangeKind) String() string {
-	switch k {
-	case ChangeNewMessage:
-		return "new-message"
-	case ChangeMessageEdited:
-		return "edited-message"
-	case ChangeActionsChanged:
-		return "actions-changed"
-	default:
-		return fmt.Sprintf("unknown-change-kind(%d)", int(k))
-	}
-}
+func (k ChangeKind) String() string { return string(k) }
 
 // Change is one explicit, structured difference between an Observation and
 // the Engine's previous Observation, computed by the Engine so actors reason

@@ -144,12 +144,12 @@ func (wp wireProposal) toProposal(prompt actor.Prompt) (actor.Proposal, error) {
 // zero value).
 func parseProposalKind(s string) (actor.ProposalKind, error) {
 	if s == "" {
-		return 0, errors.New(`"kind" is missing`)
+		return "", errors.New(`"kind" is missing`)
 	}
 	for _, k := range []actor.ProposalKind{actor.ProposeSendText, actor.ProposeClick, actor.ProposeTaskDone, actor.ProposeGiveUp} {
 		if k.String() == s {
 			return k, nil
 		}
 	}
-	return 0, fmt.Errorf("unknown proposal kind %q", s)
+	return "", fmt.Errorf("unknown proposal kind %q", s)
 }

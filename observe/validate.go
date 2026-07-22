@@ -12,26 +12,24 @@ type ActionProposal struct {
 	ActionID            string
 }
 
-// Verdict is the deterministic outcome of validating an ActionProposal.
-type Verdict int
+// Verdict is the deterministic outcome of validating an ActionProposal. It is
+// a string type, not an int enum, so it marshals to human-readable JSON (see
+// AGENTS.md's "JSON artefacts carry human-readable string constants"
+// convention) rather than a bare, meaningless integer.
+type Verdict string
 
 const (
 	// VerdictFresh: the proposed action is present, unchanged, in the
 	// Engine's current projection.
-	VerdictFresh Verdict = iota
+	VerdictFresh Verdict = "fresh"
 	// VerdictStale: the proposed action is not present in the Engine's
 	// current projection — its source observation is out of date, or was
 	// never issued by this Engine at all.
-	VerdictStale
+	VerdictStale Verdict = "stale"
 )
 
 // String renders v for diagnostics and test failure messages.
-func (v Verdict) String() string {
-	if v == VerdictFresh {
-		return "fresh"
-	}
-	return "stale"
-}
+func (v Verdict) String() string { return string(v) }
 
 // ValidationResult is the deterministic result of validating an
 // ActionProposal.

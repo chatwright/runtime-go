@@ -274,6 +274,16 @@ func TestScriptedCampaignBundleAgainstGreetbotEndToEnd(t *testing.T) {
 	if string(written) != rewritten.String() {
 		t.Fatalf("write/read/write cycle is not byte-identical:\nfirst:\n%s\nsecond:\n%s", written, rewritten.String())
 	}
+
+	// A Bundle produced by this real campaign run — not the hand-built
+	// golden fixture — also validates against the committed schema. This is
+	// the e2e counterpart TestGoldenBundleValidatesAgainstSchema's own doc
+	// comment refers to: real timestamps, a real emulator-produced journal,
+	// and (unlike the golden's always-populated slices) the loop's own
+	// nil/empty slices wherever nothing occurred, exercising the schema's
+	// nullable-field handling (see internal/schemagen) against genuine
+	// output rather than only a curated fixture.
+	validateBundleFile(t, compileSchema(t), path)
 }
 
 // assertAttributionResolves proves every entry with a non-zero FromID
