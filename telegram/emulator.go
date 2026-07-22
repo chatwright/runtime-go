@@ -46,8 +46,9 @@ const (
 type journalKind int
 
 const (
-	kindText     journalKind = iota // an inbound message or an outbound sendMessage/editMessageText
-	kindCallback                    // an inbound button click
+	kindText        journalKind = iota // an inbound message or an outbound sendMessage/editMessageText
+	kindCallback                       // an inbound button click
+	kindUnsupported                    // a bot API call to a method the emulator does not simulate
 )
 
 // journalEntry is one immutable entry in a chat's append-only event journal.
@@ -59,12 +60,20 @@ type journalEntry struct {
 	chatID       int64
 	dir          journalDirection
 	kind         journalKind
-	messageID    int // own identity, shared by inbound and outbound messages in this chat; 0 for entries with no message identity of their own (callbacks)
+	messageID    int // own identity, shared by inbound and outbound messages in this chat; 0 for entries with no message identity of their own (callbacks, unsupported calls)
 	refMessageID int // kindCallback only: the bot message the click targeted
 	version      int // 0 = original send/inbound; N = the Nth edit of this messageID
 	text         string
 	markup       *tgbotapi.InlineKeyboardMarkup
 	at           time.Time
+
+	// method and token are populated for bot-originated wire calls (sendMessage,
+	// editMessageText, unsupported methods): method is the Bot API method name;
+	// token is the bot token from the request path (/bot<token>/<method>),
+	// unvalidated and not yet used to distinguish multiple bots — recorded now
+	// so that seam exists when multi-bot identity is needed.
+	method string
+	token  string
 }
 
 // Emulator is an in-process HTTP server emulating the Telegram Bot API. It
@@ -250,9 +259,24 @@ func (e *Emulator) deliver(update tgbotapi.Update, webhookURL string, client *ht
 	return nil
 }
 
+// acknowledgedMethods are Bot API calls the emulator does not simulate but
+// must not error on: they produce no observable chat content (no message a
+// scenario could assert on), and well-behaved bots routinely call them —
+// registering or clearing a webhook, acknowledging a callback query (which
+// stops the Telegram client's loading spinner), declaring commands. Anything
+// else unrecognized is very likely a message-producing call (sendPhoto,
+// sendDocument, ...) that chatwright silently dropping would mask a bug the
+// scenario meant to catch, so it errors instead — see handleUnsupported.
+var acknowledgedMethods = map[string]bool{
+	"setWebhook":          true,
+	"deleteWebhook":       true,
+	"answerCallbackQuery": true,
+	"setMyCommands":       true,
+}
+
 // handle routes /bot<token>/<method> like the real Bot API.
 func (e *Emulator) handle(w http.ResponseWriter, r *http.Request) {
-	_, method := parsePath(r.URL.Path)
+	token, method := parsePath(r.URL.Path)
 
 	switch method {
 	case "getMe":
@@ -260,14 +284,32 @@ func (e *Emulator) handle(w http.ResponseWriter, r *http.Request) {
 	case "getUpdates":
 		e.handleGetUpdates(w, r)
 	case "sendMessage":
-		e.handleSendMessage(w, r)
+		e.handleSendMessage(w, r, token)
 	case "editMessageText":
-		e.handleEditMessageText(w, r)
+		e.handleEditMessageText(w, r, token)
 	default:
-		// Be lenient: acknowledge any other method (setWebhook, deleteWebhook,
-		// answerCallbackQuery, setMyCommands, ...) so arbitrary bots don't error.
-		writeResult(w, true)
+		if acknowledgedMethods[method] {
+			writeResult(w, true)
+			return
+		}
+		e.handleUnsupported(w, r, token, method)
 	}
+}
+
+// handleUnsupported responds to a Bot API method the emulator does not
+// simulate with a Telegram-shaped error, and journals the call (attributed to
+// whatever chat_id the request happened to carry, best-effort, if any) so a
+// transcript can show, e.g., "bot also called sendPhoto (uncaptured)" instead
+// of a bare "no message arrived" — the silent ok:true this replaces was
+// exactly the kind of leniency that masks the bug chatwright exists to catch.
+func (e *Emulator) handleUnsupported(w http.ResponseWriter, r *http.Request, token, method string) {
+	chatID := parseGenericChatID(r)
+
+	e.mu.Lock()
+	e.appendLocked(journalEntry{chatID: chatID, dir: fromBot, kind: kindUnsupported, method: method, token: token, at: time.Now()})
+	e.mu.Unlock()
+
+	writeUnsupported(w, method)
 }
 
 // handleGetUpdates emulates the Bot API's long-polling endpoint: a
@@ -326,13 +368,29 @@ func (e *Emulator) acknowledgeLocked(offset int) {
 	e.pending = kept
 }
 
-func (e *Emulator) handleSendMessage(w http.ResponseWriter, r *http.Request) {
-	chatID, text, markup := parseSendMessage(r)
+// handleSendMessage emulates sendMessage: it validates chat_id/text are
+// present (a malformed or incomplete call is a real Bot API 400, not a
+// silently-accepted no-op), assigns the message its ID from chatID's shared
+// sequence, and returns a proper Message result carrying that ID.
+func (e *Emulator) handleSendMessage(w http.ResponseWriter, r *http.Request, token string) {
+	chatID, text, markup, err := parseSendMessage(r)
+	if err != nil {
+		writeError(w, err.Error())
+		return
+	}
+	if chatID == 0 {
+		writeError(w, "sendMessage: chat_id is required")
+		return
+	}
+	if text == "" {
+		writeError(w, "sendMessage: text is required")
+		return
+	}
 
 	e.mu.Lock()
 	messageID := e.reserveMessageIDLocked(chatID)
 	at := time.Now()
-	e.appendLocked(journalEntry{chatID: chatID, dir: fromBot, kind: kindText, messageID: messageID, text: text, markup: markup, at: at})
+	e.appendLocked(journalEntry{chatID: chatID, dir: fromBot, kind: kindText, messageID: messageID, text: text, markup: markup, at: at, method: "sendMessage", token: token})
 	e.mu.Unlock()
 
 	writeResult(w, tgbotapi.Message{
@@ -344,22 +402,21 @@ func (e *Emulator) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleEditMessageText emulates editMessageText: it appends a new, versioned
-// journal entry for the identified message (rather than mutating its prior
-// entry), so WaitForEdit can observe the change and the transcript can show
-// the message's full edit history was recorded, even though only its current
+// handleEditMessageText emulates editMessageText: it validates chat_id and
+// message_id are present, then appends a new, versioned journal entry for
+// the identified message (rather than mutating its prior entry), so
+// WaitForEdit can observe the change and the transcript can show the
+// message's full edit history was recorded, even though only its current
 // state is displayed.
-func (e *Emulator) handleEditMessageText(w http.ResponseWriter, r *http.Request) {
-	_ = r.ParseForm()
-	chatID := parseChatID(r.FormValue("chat_id"))
-	messageID, _ := strconv.Atoi(r.FormValue("message_id"))
-	text := r.FormValue("text")
-	var markup *tgbotapi.InlineKeyboardMarkup
-	if rm := r.FormValue("reply_markup"); rm != "" {
-		var m tgbotapi.InlineKeyboardMarkup
-		if json.Unmarshal([]byte(rm), &m) == nil {
-			markup = &m
-		}
+func (e *Emulator) handleEditMessageText(w http.ResponseWriter, r *http.Request, token string) {
+	chatID, messageID, text, markup, err := parseEditMessageText(r)
+	if err != nil {
+		writeError(w, err.Error())
+		return
+	}
+	if chatID == 0 || messageID == 0 {
+		writeError(w, "editMessageText: chat_id and message_id are required")
+		return
 	}
 
 	e.mu.Lock()
@@ -377,6 +434,7 @@ func (e *Emulator) handleEditMessageText(w http.ResponseWriter, r *http.Request)
 		chatID: chatID, dir: fromBot, kind: kindText,
 		messageID: messageID, version: prev.version + 1,
 		text: text, markup: markup, at: at,
+		method: "editMessageText", token: token,
 	})
 	e.mu.Unlock()
 
@@ -489,17 +547,21 @@ func (e *Emulator) Transcript(chatID int64) string {
 
 // renderEntry renders one transcript line for en.
 func renderEntry(en journalEntry) string {
-	if en.kind == kindCallback {
+	switch en.kind {
+	case kindCallback:
 		return fmt.Sprintf("[user] clicked %q on message %d", en.text, en.refMessageID)
+	case kindUnsupported:
+		return fmt.Sprintf("bot also called %s (uncaptured)", en.method)
+	default:
+		who := "user"
+		if en.dir == fromBot {
+			who = "bot"
+		}
+		if en.version > 0 {
+			return fmt.Sprintf("[%d %s] %s (v%d, edited)", en.messageID, who, en.text, en.version+1)
+		}
+		return fmt.Sprintf("[%d %s] %s", en.messageID, who, en.text)
 	}
-	who := "user"
-	if en.dir == fromBot {
-		who = "bot"
-	}
-	if en.version > 0 {
-		return fmt.Sprintf("[%d %s] %s (v%d, edited)", en.messageID, who, en.text, en.version+1)
-	}
-	return fmt.Sprintf("[%d %s] %s", en.messageID, who, en.text)
 }
 
 // normalize converts a journal entry into a neutral message.
@@ -535,26 +597,83 @@ func parsePath(path string) (token, method string) {
 }
 
 // parseSendMessage extracts chat_id, text and reply_markup from a sendMessage
-// request, accepting either application/json or form-urlencoded bodies.
-func parseSendMessage(r *http.Request) (chatID int64, text string, markup *tgbotapi.InlineKeyboardMarkup) {
+// request, accepting either application/json or form-urlencoded bodies. It
+// returns an error only for a body that fails to parse at all (invalid JSON,
+// invalid form encoding) — missing individual fields are the caller's
+// business (handleSendMessage rejects those with a specific description).
+func parseSendMessage(r *http.Request) (chatID int64, text string, markup *tgbotapi.InlineKeyboardMarkup, err error) {
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		var p struct {
 			ChatID      json.RawMessage                `json:"chat_id"`
 			Text        string                         `json:"text"`
 			ReplyMarkup *tgbotapi.InlineKeyboardMarkup `json:"reply_markup"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&p)
-		return parseChatID(string(p.ChatID)), p.Text, p.ReplyMarkup
+		if err = json.NewDecoder(r.Body).Decode(&p); err != nil {
+			return 0, "", nil, fmt.Errorf("sendMessage: invalid JSON body: %w", err)
+		}
+		return parseChatID(string(p.ChatID)), p.Text, p.ReplyMarkup, nil
 	}
 
-	_ = r.ParseForm()
+	if err = r.ParseForm(); err != nil {
+		return 0, "", nil, fmt.Errorf("sendMessage: invalid form body: %w", err)
+	}
 	if rm := r.FormValue("reply_markup"); rm != "" {
 		var m tgbotapi.InlineKeyboardMarkup
 		if json.Unmarshal([]byte(rm), &m) == nil {
 			markup = &m
 		}
 	}
-	return parseChatID(r.FormValue("chat_id")), r.FormValue("text"), markup
+	return parseChatID(r.FormValue("chat_id")), r.FormValue("text"), markup, nil
+}
+
+// parseEditMessageText extracts chat_id, message_id, text and reply_markup
+// from an editMessageText request, accepting either application/json or
+// form-urlencoded bodies — mirroring parseSendMessage. Real Telegram accepts
+// JSON here too; previously only form bodies were parsed, so a non-Go bot
+// (Python, Node, ...) editing via JSON silently got empty chat_id/message_id/
+// text and a confusing "message to edit not found".
+func parseEditMessageText(r *http.Request) (chatID int64, messageID int, text string, markup *tgbotapi.InlineKeyboardMarkup, err error) {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		var p struct {
+			ChatID      json.RawMessage                `json:"chat_id"`
+			MessageID   int                            `json:"message_id"`
+			Text        string                         `json:"text"`
+			ReplyMarkup *tgbotapi.InlineKeyboardMarkup `json:"reply_markup"`
+		}
+		if err = json.NewDecoder(r.Body).Decode(&p); err != nil {
+			return 0, 0, "", nil, fmt.Errorf("editMessageText: invalid JSON body: %w", err)
+		}
+		return parseChatID(string(p.ChatID)), p.MessageID, p.Text, p.ReplyMarkup, nil
+	}
+
+	if err = r.ParseForm(); err != nil {
+		return 0, 0, "", nil, fmt.Errorf("editMessageText: invalid form body: %w", err)
+	}
+	messageID, _ = strconv.Atoi(r.FormValue("message_id"))
+	if rm := r.FormValue("reply_markup"); rm != "" {
+		var m tgbotapi.InlineKeyboardMarkup
+		if json.Unmarshal([]byte(rm), &m) == nil {
+			markup = &m
+		}
+	}
+	return parseChatID(r.FormValue("chat_id")), messageID, r.FormValue("text"), markup, nil
+}
+
+// parseGenericChatID best-effort extracts a top-level chat_id field from a
+// request, accepting either JSON or form-urlencoded bodies. Used only for
+// methods the emulator does not otherwise understand (handleUnsupported),
+// where all it needs is which chat to attribute the call to for the
+// transcript — not full validation of an unknown payload shape.
+func parseGenericChatID(r *http.Request) int64 {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		var p struct {
+			ChatID json.RawMessage `json:"chat_id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&p)
+		return parseChatID(string(p.ChatID))
+	}
+	_ = r.ParseForm()
+	return parseChatID(r.FormValue("chat_id"))
 }
 
 func parseChatID(s string) int64 {
@@ -569,8 +688,28 @@ func writeResult(w http.ResponseWriter, result any) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": result})
 }
 
-// writeError writes a Bot API error envelope {"ok":false,"description":<msg>}.
+// writeError writes a Bot API error envelope {"ok":false,"error_code":400,
+// "description":<msg>} with a matching HTTP 400 status — a malformed or
+// incomplete request (bad JSON, a missing required field, editing a message
+// that doesn't exist) is a real Bot API 400, not a silently-accepted no-op.
 func writeError(w http.ResponseWriter, description string) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error_code": 400, "description": description})
+}
+
+// writeUnsupported writes the Bot API error envelope for a method the
+// emulator does not simulate: {"ok":false,"error_code":501,"description":
+// "method not emulated: <method>"}, with a matching HTTP 501 status. 501 is
+// not a code the real Bot API would ever return — an unimplemented method
+// there is simply unreachable — but it usefully distinguishes "chatwright
+// doesn't emulate this yet" from a genuine validation failure (400).
+func writeUnsupported(w http.ResponseWriter, method string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotImplemented)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":          false,
+		"error_code":  501,
+		"description": "method not emulated: " + method,
+	})
 }

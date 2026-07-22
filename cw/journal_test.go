@@ -18,9 +18,8 @@ import (
 // shared per-chat message-ID sequence and edit journal: "/start" sends
 // "Hello"; "/edit" edits that same message to "Hello, edited". It remembers
 // only the most recently sent message ID per chat. The edit call is
-// form-encoded (as the real tgbotapi client sends it today; the emulator's
-// editMessageText handler does not yet parse JSON bodies — that lands in a
-// later step).
+// form-encoded (as the real tgbotapi client sends it); see
+// telegram.TestHandleEditMessageText_JSONBody for JSON-bodied edit coverage.
 func editingGreeter(botAPIURL, token string) http.HandlerFunc {
 	var mu sync.Mutex
 	lastMsgID := map[int64]int{}
