@@ -3,7 +3,7 @@ package chatwright
 import (
 	"net/http"
 
-	"github.com/chatwright/chatwright/chatwrite/platform"
+	"github.com/chatwright/chatwright/platform"
 )
 
 // Option configures a Chatwright harness at construction time.

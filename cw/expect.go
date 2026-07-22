@@ -3,7 +3,7 @@ package chatwright
 import (
 	"time"
 
-	"github.com/chatwright/chatwright/chatwrite/platform"
+	"github.com/chatwright/chatwright/platform"
 )
 
 // BotMessage is a fluent handle to a message the bot sent. Assertion methods

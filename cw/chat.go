@@ -3,7 +3,7 @@ package chatwright
 import (
 	"time"
 
-	"github.com/chatwright/chatwright/chatwrite/platform"
+	"github.com/chatwright/chatwright/platform"
 )
 
 // Chat is a conversation between a user and the bot-under-test. Obtain one via

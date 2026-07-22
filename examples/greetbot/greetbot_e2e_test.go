@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright/chatwrite"
-	"github.com/chatwright/chatwright/chatwrite/examples/greetbot"
+	"github.com/chatwright/chatwright"
+	"github.com/chatwright/chatwright/examples/greetbot"
 )
 
 // TestGreetBotEndToEnd runs greetScenario against a full end-to-end setup:

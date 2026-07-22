@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright/chatwrite"
-	"github.com/chatwright/chatwright/chatwrite/whatsapp"
+	"github.com/chatwright/chatwright"
+	"github.com/chatwright/chatwright/whatsapp"
 )
 
 // The greeter bots below are deliberately framework-agnostic: plain net/http, no
