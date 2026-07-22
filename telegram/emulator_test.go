@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/chatwright/chatwright/platform"
 )
 
 // postJSON POSTs a JSON payload to the fake Bot API and returns the HTTP
@@ -219,5 +221,97 @@ func TestHandleEditMessageText_MalformedJSON_Returns400(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// TestTranscriptAndJournalAgree drives a short conversation covering every
+// journal entry kind — an inbound text, an outbound message with an action,
+// an edit, a button click and an uncaptured call — then checks the
+// human-readable Transcript and the structured Journal describe the same
+// events: every current message state, click and uncaptured call the journal
+// records is legible in the transcript's prose, the pre-edit text is not,
+// and the transcript has exactly one prose segment per distinct event the
+// journal records (edits collapsed into their message's single segment).
+func TestTranscriptAndJournalAgree(t *testing.T) {
+	e := NewEmulator()
+	t.Cleanup(e.Close)
+
+	const chatID = int64(21)
+	if err := e.SubmitText(chatID, platform.User{ID: 1, FirstName: "Alice"}, "hi"); err != nil {
+		t.Fatalf("SubmitText: %v", err)
+	}
+
+	_, sendEnv := postJSON(t, e.BotAPIURL()+"/botTEST/sendMessage", map[string]any{
+		"chat_id": chatID,
+		"text":    "Pick one",
+		"reply_markup": map[string]any{
+			"inline_keyboard": [][]map[string]any{{{"text": "Yes", "callback_data": "cb_yes"}}},
+		},
+	})
+	msgID := int(resultOf(t, sendEnv)["message_id"].(float64))
+
+	status, _ := postJSON(t, e.BotAPIURL()+"/botTEST/editMessageText", map[string]any{
+		"chat_id": chatID, "message_id": msgID, "text": "Picked",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("editMessageText status = %d, want %d", status, http.StatusOK)
+	}
+
+	if err := e.SubmitClick(chatID, platform.User{ID: 1, FirstName: "Alice"}, "cb_yes", msgID); err != nil {
+		t.Fatalf("SubmitClick: %v", err)
+	}
+
+	postJSON(t, e.BotAPIURL()+"/botTEST/sendPhoto", map[string]any{"chat_id": chatID, "photo": "file-id"})
+
+	transcript := e.Transcript(chatID)
+	journal, err := e.Journal(chatID)
+	if err != nil {
+		t.Fatalf("Journal: %v", err)
+	}
+
+	// One segment per distinct logical message, at its current text — not
+	// one per journal entry, since an edit updates its message's existing
+	// segment rather than appending a new one.
+	latestText := map[int]string{}
+	var order []int
+	for _, en := range journal {
+		if en.Kind != platform.JournalEntryMessage {
+			continue
+		}
+		if _, ok := latestText[en.MessageID]; !ok {
+			order = append(order, en.MessageID)
+		}
+		latestText[en.MessageID] = en.Text
+	}
+	wantSegments := len(order)
+	for _, id := range order {
+		text := latestText[id]
+		if !strings.Contains(transcript, text) {
+			t.Fatalf("transcript missing message %d's current text %q\ntranscript: %s", id, text, transcript)
+		}
+	}
+
+	for _, en := range journal {
+		switch en.Kind {
+		case platform.JournalEntryAction:
+			wantSegments++
+			if !strings.Contains(transcript, "clicked") || !strings.Contains(transcript, en.Text) {
+				t.Fatalf("transcript missing journal action click %q\ntranscript: %s", en.Text, transcript)
+			}
+		case platform.JournalEntryUncaptured:
+			wantSegments++
+			if !strings.Contains(transcript, en.Method) || !strings.Contains(transcript, "uncaptured") {
+				t.Fatalf("transcript missing journal uncaptured call %q\ntranscript: %s", en.Method, transcript)
+			}
+		}
+	}
+
+	gotSegments := len(strings.Split(transcript, " / "))
+	if gotSegments != wantSegments {
+		t.Fatalf("transcript has %d segments, want %d (one per journal event, edits collapsed): %s", gotSegments, wantSegments, transcript)
+	}
+
+	if strings.Contains(transcript, "Pick one") {
+		t.Fatalf("transcript still shows the message's pre-edit text: %s", transcript)
 	}
 }
