@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/chatwright/chatwright/platform"
@@ -54,6 +55,9 @@ type Chatwright struct {
 
 	nextUpdateID int
 	nextInMsgID  int
+
+	chatsMu sync.Mutex
+	chats   map[int64]*Chat // cached by chatID so PrivateChat returns a stable handle per user
 }
 
 // New starts a Chatwright harness. It selects a platform (Telegram by default,

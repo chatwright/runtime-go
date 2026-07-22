@@ -1,6 +1,8 @@
 package chatwright
 
 import (
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/chatwright/chatwright/platform"
@@ -27,7 +29,16 @@ type BotMessage struct {
 
 // Within bounds how long the bot may take to reply. It both sets the wait window
 // and asserts (via the captured latency metric) that the reply arrived in time.
+// Calling it after the message has already resolved (e.g. after Text or
+// IsTextMessage) is a usage error: the wait already happened, so a timeout set
+// now can no longer be honored. It fails the test immediately with a clear
+// message instead of silently doing nothing.
 func (m *BotMessage) Within(d time.Duration) *BotMessage {
+	m.chat.cw.t.Helper()
+	if m.resolved {
+		m.chat.cw.t.Fatalf("chatwright: Within called after the message was already resolved; call Within before Text/IsTextMessage/ExpectAction/Metrics/Snapshot")
+		return m
+	}
 	m.timeout = d
 	m.enforceWithin = true
 	m.within = d
@@ -91,6 +102,33 @@ func (m *BotMessage) Text(want string) *BotMessage {
 	return m
 }
 
+// TextContains asserts the bot's message text contains substr.
+func (m *BotMessage) TextContains(substr string) *BotMessage {
+	m.chat.cw.t.Helper()
+	m.resolve()
+	if !strings.Contains(m.msg.Text, substr) {
+		m.chat.cw.t.Errorf("chatwright: bot message text = %q, want it to contain %q", m.msg.Text, substr)
+	}
+	return m
+}
+
+// TextMatches asserts the bot's message text matches the given regular
+// expression (as accepted by the regexp package). An invalid pattern fails the
+// test immediately rather than silently matching nothing.
+func (m *BotMessage) TextMatches(pattern string) *BotMessage {
+	m.chat.cw.t.Helper()
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		m.chat.cw.t.Fatalf("chatwright: TextMatches: invalid pattern %q: %v", pattern, err)
+		return m
+	}
+	m.resolve()
+	if !re.MatchString(m.msg.Text) {
+		m.chat.cw.t.Errorf("chatwright: bot message text = %q, want it to match %q", m.msg.Text, pattern)
+	}
+	return m
+}
+
 // ExpectEdited returns a fluent handle that waits for this message to be
 // edited in place (e.g. a Telegram editMessageText call) and asserts on its new
 // content — the same assertion methods as ExpectBotMessage, but bound to this
@@ -99,11 +137,12 @@ func (m *BotMessage) Text(want string) *BotMessage {
 func (m *BotMessage) ExpectEdited() *BotMessage {
 	m.chat.cw.t.Helper()
 	m.resolve()
-	return &BotMessage{chat: m.chat, timeout: m.timeout, editOf: m.msg}
+	return m.chat.newBotMessage(m.timeout, m.msg)
 }
 
 // Metrics returns the metrics captured for this message.
 func (m *BotMessage) Metrics() Metrics {
+	m.chat.cw.t.Helper()
 	m.resolve()
 	return Metrics{Latency: m.latency}
 }
@@ -144,6 +183,7 @@ func (m *BotMessage) action(row, col int) *platform.Action {
 // native representation (Telegram button text/callback_data, WhatsApp reply
 // title/id).
 func (m *BotMessage) ExpectAction(row, col int) *Action {
+	m.chat.cw.t.Helper()
 	m.resolve()
 	return &Action{chat: m.chat, act: m.action(row, col), messageID: m.msg.MessageID}
 }
