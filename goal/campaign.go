@@ -24,6 +24,7 @@ type CampaignState struct {
 	statuses   map[string]TaskStatus
 	failures   map[string]int
 	steps      int
+	cost       float64
 	startedAt  time.Time
 	stopped    bool
 	stopReason StopReason
@@ -220,6 +221,30 @@ func (c *CampaignState) RecordFailure(id string) error {
 	return nil
 }
 
+// RecordCost accrues amount against the campaign's cost budget (tokens,
+// currency or whatever unit Budgets.MaxCost was expressed in). Costs
+// accumulate across calls for the life of the campaign, not per task — call
+// it once per spend you want counted (e.g. once per actor Provider.Propose
+// call, with that call's Usage.Cost). It stops the campaign deterministically
+// with StopBudgetCost the moment accrued cost reaches a set, positive
+// Budgets.MaxCost, and errors if the campaign has already stopped or amount
+// is negative.
+func (c *CampaignState) RecordCost(amount float64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.stopped {
+		return c.stoppedErr()
+	}
+	if amount < 0 {
+		return fmt.Errorf("%w: %v", ErrNegativeCost, amount)
+	}
+	c.cost += amount
+	if max := c.goal.Budgets.MaxCost; max != nil && *max > 0 && c.cost >= *max {
+		c.stop(StopBudgetCost)
+	}
+	return nil
+}
+
 // Cancel stops the campaign with StopCancelled — an external decision to
 // end the run early, distinct from any budget being exhausted. It errors if
 // the campaign has already stopped.
@@ -288,6 +313,13 @@ func (c *CampaignState) Steps() int {
 	return c.steps
 }
 
+// Cost returns the total cost RecordCost has accrued so far.
+func (c *CampaignState) Cost() float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cost
+}
+
 // FailureCount returns how many failures RecordFailure has counted against
 // the given task id so far (zero for an unknown id, rather than an error —
 // callers that need to distinguish "no failures" from "unknown task" should
@@ -305,6 +337,7 @@ type CampaignSnapshot struct {
 	GoalID     string
 	Statuses   map[string]TaskStatus
 	Steps      int
+	Cost       float64
 	Elapsed    time.Duration
 	Failures   map[string]int
 	Stopped    bool
@@ -334,6 +367,7 @@ func (c *CampaignState) Snapshot() CampaignSnapshot {
 		GoalID:     c.goal.ID,
 		Statuses:   statuses,
 		Steps:      c.steps,
+		Cost:       c.cost,
 		Elapsed:    elapsedAt.Sub(c.startedAt),
 		Failures:   failures,
 		Stopped:    c.stopped,

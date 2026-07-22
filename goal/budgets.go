@@ -20,11 +20,8 @@ type Budgets struct {
 	MaxRepeatedFailures int
 
 	// MaxCost optionally caps spend against the campaign (tokens, currency
-	// or another caller-defined unit). Nil means cost is not budgeted.
-	//
-	// This slice validates MaxCost but does not enforce it: there is no AI
-	// actor yet to spend it, so CampaignState has no RecordCost method and
-	// no corresponding StopReason. Enforcement arrives with the actor loop.
+	// or another caller-defined unit — whatever unit the caller accrues via
+	// CampaignState.RecordCost). Nil means cost is not budgeted.
 	MaxCost *float64
 }
 

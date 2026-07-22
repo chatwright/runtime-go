@@ -121,6 +121,24 @@ func TestBudgetsProduceDeterministicStopReasons(t *testing.T) {
 			},
 			want: StopBudgetDuration,
 		},
+		"cost budget": {
+			drive: func(t *testing.T, _ *fakeClock, campaign *CampaignState) {
+				t.Helper()
+				if err := campaign.RecordCost(0.6); err != nil {
+					t.Fatalf("RecordCost() error = %v", err)
+				}
+				if campaign.Stopped() {
+					t.Fatal("campaign stopped before the cost budget was reached")
+				}
+				if err := campaign.RecordCost(0.5); err != nil {
+					t.Fatalf("RecordCost() error = %v", err)
+				}
+				if got := campaign.Cost(); got != 1.1 {
+					t.Fatalf("Cost() = %v, want 1.1", got)
+				}
+			},
+			want: StopBudgetCost,
+		},
 		"goal complete": {
 			drive: func(t *testing.T, _ *fakeClock, campaign *CampaignState) {
 				t.Helper()
@@ -153,13 +171,14 @@ func TestBudgetsProduceDeterministicStopReasons(t *testing.T) {
 		},
 	}
 
+	maxCost := 1.0
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			clock := newFakeClock()
 			g := Goal{
 				ID:      "single-task",
 				Tasks:   []Task{{ID: "onboarding"}},
-				Budgets: Budgets{MaxSteps: 2, MaxDuration: 5 * time.Minute},
+				Budgets: Budgets{MaxSteps: 2, MaxDuration: 5 * time.Minute, MaxCost: &maxCost},
 			}
 			campaign := mustCampaign(t, g, clock.now)
 
@@ -251,6 +270,17 @@ func TestNewCampaignStateRejectsInvalidGoal(t *testing.T) {
 	}
 }
 
+func TestRecordCostRejectsNegativeAmount(t *testing.T) {
+	clock := newFakeClock()
+	campaign := mustCampaign(t, onboardingAddItemsGoal(), clock.now)
+	if err := campaign.RecordCost(-0.01); !errors.Is(err, ErrNegativeCost) {
+		t.Fatalf("RecordCost(-0.01) error = %v, want ErrNegativeCost", err)
+	}
+	if campaign.Stopped() {
+		t.Fatal("a rejected negative cost must not stop the campaign")
+	}
+}
+
 func TestCampaignRejectsMutationsAfterStop(t *testing.T) {
 	clock := newFakeClock()
 	campaign := mustCampaign(t, onboardingAddItemsGoal(), clock.now)
@@ -266,6 +296,7 @@ func TestCampaignRejectsMutationsAfterStop(t *testing.T) {
 		"Skip":          func() error { return campaign.Skip("onboarding") },
 		"RecordStep":    campaign.RecordStep,
 		"RecordFailure": func() error { return campaign.RecordFailure("onboarding") },
+		"RecordCost":    func() error { return campaign.RecordCost(1) },
 		"Cancel":        campaign.Cancel,
 		"Abort":         campaign.Abort,
 	}

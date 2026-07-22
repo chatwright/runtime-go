@@ -8,8 +8,7 @@
 // opinion on how a task is attempted — only on what a valid Goal looks like
 // and which state transitions a campaign may legally make. The
 // observe-plan-act-validate loop that drives an AI actor through a
-// CampaignState, and everything that spends the cost budget, are later
-// slices.
+// CampaignState (package actor) is a later slice.
 //
 // Typical use:
 //

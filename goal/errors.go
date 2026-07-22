@@ -43,6 +43,8 @@ var (
 	// ErrCampaignStopped means a mutating method was called after the
 	// campaign had already stopped.
 	ErrCampaignStopped = errors.New("goal: campaign has already stopped")
+	// ErrNegativeCost means RecordCost was called with a negative amount.
+	ErrNegativeCost = errors.New("goal: cost amount must not be negative")
 )
 
 // fmtBudgetErr wraps a sentinel budget error with the offending field name

@@ -48,6 +48,8 @@ const (
 	// StopRepeatedFailure means Budgets.MaxRepeatedFailures was reached for
 	// one task.
 	StopRepeatedFailure StopReason = "repeated-failure"
+	// StopBudgetCost means Budgets.MaxCost was reached via RecordCost.
+	StopBudgetCost StopReason = "budget-cost"
 	// StopCancelled means CampaignState.Cancel was called.
 	StopCancelled StopReason = "cancelled"
 	// StopError means CampaignState.Abort was called after an unrecoverable
