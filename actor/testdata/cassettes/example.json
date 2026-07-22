@@ -1,0 +1,22 @@
+{
+  "providerConfig": "example-provider model=example-scripted-v1",
+  "entries": [
+    {
+      "key": "c15d67b1efcc4d7c9c4b8278b8556c4ad702244f1886c706d72b059681c3a138",
+      "promptSummary": "goal=listus-shopping-list task=add-items observation#2 messages=1 history=0",
+      "proposal": {
+        "Kind": "send-text",
+        "Text": "milk, eggs, bread",
+        "ActionID": "",
+        "ObservationSequence": 0,
+        "Rationale": "the bot asked what to add; the task is to add several items"
+      },
+      "usage": {
+        "Model": "example-scripted-v1",
+        "InputTokens": 42,
+        "OutputTokens": 7,
+        "Latency": 0
+      }
+    }
+  ]
+}
