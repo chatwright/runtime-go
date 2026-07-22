@@ -56,8 +56,9 @@ type User struct {
 type Chatwright struct {
 	t testing.TB
 
-	platform platform.Platform
-	emu      platform.Emulator
+	platform   platform.Platform
+	listenAddr string // set by WithListenAddr; empty means "let the platform pick"
+	emu        platform.Emulator
 
 	client *http.Client
 
@@ -84,9 +85,30 @@ func New(t testing.TB, opts ...Option) *Chatwright {
 	for _, opt := range opts {
 		opt(cw)
 	}
-	cw.emu = cw.platform.Start()
+	cw.emu = cw.startEmulator()
 	t.Cleanup(cw.emu.Close)
 	return cw
+}
+
+// startEmulator boots the configured platform's emulated API server,
+// honoring a caller-chosen listen address set via WithListenAddr when one
+// was given. It fails the test via t.Fatalf if an address was requested but
+// the platform doesn't support one (doesn't implement platform.AddrPlatform)
+// or the address itself cannot be bound.
+func (cw *Chatwright) startEmulator() platform.Emulator {
+	cw.t.Helper()
+	if cw.listenAddr == "" {
+		return cw.platform.Start()
+	}
+	ap, ok := cw.platform.(platform.AddrPlatform)
+	if !ok {
+		cw.t.Fatalf("chatwright: WithListenAddr(%q) set but platform %q does not support a fixed listen address", cw.listenAddr, cw.platform.Name())
+	}
+	emu, err := ap.StartAt(cw.listenAddr)
+	if err != nil {
+		cw.t.Fatalf("chatwright: %v", err)
+	}
+	return emu
 }
 
 // Platform is the name of the active platform, e.g. "telegram".

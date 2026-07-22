@@ -160,3 +160,22 @@ type Platform interface {
 	// Start boots this platform's emulated API server.
 	Start() Emulator
 }
+
+// AddrPlatform is optionally implemented by a Platform whose emulated API
+// server can bind a caller-chosen local address instead of a random port.
+// It exists for a bot-under-test started as a separate process — in any
+// language, since Chatwright only speaks HTTP — that must be configured
+// with the emulator's API base URL in its environment before that process
+// starts, which means the address has to be decided up front rather than
+// read back from the emulator afterwards. chatwright.WithListenAddr uses
+// this interface; New fails the test if a listen address is configured for
+// a platform that doesn't implement it.
+type AddrPlatform interface {
+	Platform
+
+	// StartAt boots this platform's emulated API server bound to addr (e.g.
+	// "127.0.0.1:54321"). It returns an error if addr cannot be bound (e.g.
+	// already in use) instead of panicking, so the caller can surface it
+	// through the test.
+	StartAt(addr string) (Emulator, error)
+}

@@ -39,3 +39,27 @@ func WithWebhookHandler(h http.Handler) Option {
 func WithSafetyTimeout(d time.Duration) Option {
 	return func(cw *Chatwright) { cw.safetyTimeout = d }
 }
+
+// WithListenAddr binds the emulated platform API server to a caller-chosen
+// local address (e.g. "127.0.0.1:54321") instead of a random port.
+//
+// The common case — ServeWebhook driving an in-process bot — never needs
+// this: cw.BotAPIURL() is available as soon as New returns, before the bot
+// is even constructed. It matters for a bot-under-test started as a
+// separate process, in any language, since Chatwright only speaks HTTP:
+// that process reads its API base URL from its own configuration (e.g. an
+// environment variable) at start-up, so the address must be decided before
+// New runs, not read back from it afterwards. Pick a free address once
+// (e.g. bind to "127.0.0.1:0", read the assigned port, then close it),
+// configure the process with it, and pass the same address here — the
+// emulator then binds exactly where the process already expects it,
+// regardless of which of the two is started first. See examples/pybot for a
+// complete non-Go example using this seam.
+//
+// Only platforms that implement platform.AddrPlatform support this
+// (Telegram does); New fails the test via t.Fatalf if a non-empty address is
+// set for a platform that doesn't, and if the address itself cannot be
+// bound (e.g. already in use).
+func WithListenAddr(addr string) Option {
+	return func(cw *Chatwright) { cw.listenAddr = addr }
+}

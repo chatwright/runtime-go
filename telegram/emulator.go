@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -33,6 +34,10 @@ type tgPlatform struct{}
 func (tgPlatform) Name() string { return "telegram" }
 
 func (tgPlatform) Start() platform.Emulator { return NewEmulator() }
+
+// StartAt implements platform.AddrPlatform: it boots the emulator bound to a
+// caller-chosen address instead of a random port.
+func (tgPlatform) StartAt(addr string) (platform.Emulator, error) { return NewEmulatorAt(addr) }
 
 // journalDirection distinguishes who produced a journal entry.
 type journalDirection int
@@ -103,6 +108,31 @@ func NewEmulator() *Emulator {
 	}
 	e.server = httptest.NewServer(http.HandlerFunc(e.handle))
 	return e
+}
+
+// NewEmulatorAt starts a fake Telegram Bot API server bound to addr (e.g.
+// "127.0.0.1:54321") instead of a random local port. This is what lets an
+// externally-started bot process — written in any language, since Chatwright
+// only speaks HTTP — be configured with the emulator's exact API base URL
+// before it starts: pick a free address once (e.g. bind to "127.0.0.1:0",
+// read the assigned port back, then close it), pass that same address here
+// and to the process's configuration, and the emulator ends up listening
+// exactly where the process already expects it.
+func NewEmulatorAt(addr string) (*Emulator, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("chatwright: listen on %q: %w", addr, err)
+	}
+	e := &Emulator{
+		nextMsgID: make(map[int64]int),
+		updated:   make(chan struct{}),
+	}
+	e.server = &httptest.Server{
+		Listener: ln,
+		Config:   &http.Server{Handler: http.HandlerFunc(e.handle)},
+	}
+	e.server.Start()
+	return e, nil
 }
 
 // BotAPIURL is the base URL the bot-under-test should use as its Telegram Bot API
