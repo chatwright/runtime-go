@@ -43,8 +43,8 @@ func tgGreeter(botAPIURL, token string) http.HandlerFunc {
 			return
 		}
 
-		switch {
-		case upd.CallbackQuery.Data == "my-events":
+		switch upd.CallbackQuery.Data {
+		case "my-events":
 			post(botAPIURL+"/bot"+token+"/sendMessage", map[string]any{
 				"chat_id": upd.CallbackQuery.Message.Chat.ID,
 				"text":    "Here are your events",
