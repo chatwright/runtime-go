@@ -56,6 +56,15 @@ const (
 	kindUnsupported                    // a bot API call to a method the emulator does not simulate
 )
 
+// EmulatedBotUserID is the Telegram user id this emulator always assigns to
+// the single bot-under-test it simulates — the same id getMe returns and
+// every outbound (bot-originated) message/edit is sent "from". The emulator
+// does not yet distinguish multiple bot identities within one instance (see
+// journalEntry's own doc comment on its recorded-but-unused token field), so
+// this is the one value a caller needs to attribute any bot-originated
+// platform.JournalEntry (via its FromID) to the bot.
+const EmulatedBotUserID int64 = 1
+
 // journalEntry is one immutable entry in a chat's append-only event journal.
 // A message edit never mutates a prior entry: it appends a new entry carrying
 // the same messageID and an incremented version, so intermediate content and
@@ -71,6 +80,7 @@ type journalEntry struct {
 	text         string
 	markup       *tgbotapi.InlineKeyboardMarkup
 	at           time.Time
+	fromID       int64 // Telegram user id of this entry's originator: the sending user's id (fromUser) or EmulatedBotUserID (fromBot)
 
 	// method and token are populated for bot-originated wire calls (sendMessage,
 	// editMessageText, unsupported methods): method is the Bot API method name;
@@ -200,7 +210,7 @@ func (e *Emulator) latestTextEntryLocked(chatID int64, messageID int) (journalEn
 func (e *Emulator) SubmitText(chatID int64, user platform.User, text string) error {
 	e.mu.Lock()
 	msgID := e.reserveMessageIDLocked(chatID)
-	e.appendLocked(journalEntry{chatID: chatID, dir: fromUser, kind: kindText, messageID: msgID, text: text, at: time.Now()})
+	e.appendLocked(journalEntry{chatID: chatID, dir: fromUser, kind: kindText, messageID: msgID, text: text, at: time.Now(), fromID: user.ID})
 	updateID := e.reserveUpdateIDLocked()
 	webhookURL, client := e.webhookURL, e.httpClient
 	e.mu.Unlock()
@@ -229,7 +239,7 @@ func (e *Emulator) SubmitText(chatID int64, user platform.User, text string) err
 // (targetMessageID) rather than creating a new one.
 func (e *Emulator) SubmitClick(chatID int64, user platform.User, data string, targetMessageID int) error {
 	e.mu.Lock()
-	e.appendLocked(journalEntry{chatID: chatID, dir: fromUser, kind: kindCallback, refMessageID: targetMessageID, text: data, at: time.Now()})
+	e.appendLocked(journalEntry{chatID: chatID, dir: fromUser, kind: kindCallback, refMessageID: targetMessageID, text: data, at: time.Now(), fromID: user.ID})
 	updateID := e.reserveUpdateIDLocked()
 	webhookURL, client := e.webhookURL, e.httpClient
 	e.mu.Unlock()
@@ -247,7 +257,7 @@ func (e *Emulator) SubmitClick(chatID int64, user platform.User, data string, ta
 			Data: data,
 			Message: &tgbotapi.Message{
 				MessageID: targetMessageID,
-				From:      &tgbotapi.User{ID: 1, IsBot: true, FirstName: "ChatwrightBot"},
+				From:      &tgbotapi.User{ID: EmulatedBotUserID, IsBot: true, FirstName: "ChatwrightBot"},
 				Chat:      &tgbotapi.Chat{ID: chatID, Type: "private", FirstName: user.FirstName},
 			},
 		},
@@ -310,7 +320,7 @@ func (e *Emulator) handle(w http.ResponseWriter, r *http.Request) {
 
 	switch method {
 	case "getMe":
-		writeResult(w, tgbotapi.User{ID: 1, IsBot: true, FirstName: "ChatwrightBot", UserName: "chatwright_bot"})
+		writeResult(w, tgbotapi.User{ID: EmulatedBotUserID, IsBot: true, FirstName: "ChatwrightBot", UserName: "chatwright_bot"})
 	case "getUpdates":
 		e.handleGetUpdates(w, r)
 	case "sendMessage":
@@ -336,7 +346,7 @@ func (e *Emulator) handleUnsupported(w http.ResponseWriter, r *http.Request, tok
 	chatID := parseGenericChatID(r)
 
 	e.mu.Lock()
-	e.appendLocked(journalEntry{chatID: chatID, dir: fromBot, kind: kindUnsupported, method: method, token: token, at: time.Now()})
+	e.appendLocked(journalEntry{chatID: chatID, dir: fromBot, kind: kindUnsupported, method: method, token: token, at: time.Now(), fromID: EmulatedBotUserID})
 	e.mu.Unlock()
 
 	writeUnsupported(w, method)
@@ -420,12 +430,12 @@ func (e *Emulator) handleSendMessage(w http.ResponseWriter, r *http.Request, tok
 	e.mu.Lock()
 	messageID := e.reserveMessageIDLocked(chatID)
 	at := time.Now()
-	e.appendLocked(journalEntry{chatID: chatID, dir: fromBot, kind: kindText, messageID: messageID, text: text, markup: markup, at: at, method: "sendMessage", token: token})
+	e.appendLocked(journalEntry{chatID: chatID, dir: fromBot, kind: kindText, messageID: messageID, text: text, markup: markup, at: at, method: "sendMessage", token: token, fromID: EmulatedBotUserID})
 	e.mu.Unlock()
 
 	writeResult(w, tgbotapi.Message{
 		MessageID: messageID,
-		From:      &tgbotapi.User{ID: 1, IsBot: true, FirstName: "ChatwrightBot"},
+		From:      &tgbotapi.User{ID: EmulatedBotUserID, IsBot: true, FirstName: "ChatwrightBot"},
 		Chat:      &tgbotapi.Chat{ID: chatID, Type: "private"},
 		Date:      int(at.Unix()),
 		Text:      text,
@@ -465,12 +475,13 @@ func (e *Emulator) handleEditMessageText(w http.ResponseWriter, r *http.Request,
 		messageID: messageID, version: prev.version + 1,
 		text: text, markup: markup, at: at,
 		method: "editMessageText", token: token,
+		fromID: EmulatedBotUserID,
 	})
 	e.mu.Unlock()
 
 	writeResult(w, tgbotapi.Message{
 		MessageID: messageID,
-		From:      &tgbotapi.User{ID: 1, IsBot: true, FirstName: "ChatwrightBot"},
+		From:      &tgbotapi.User{ID: EmulatedBotUserID, IsBot: true, FirstName: "ChatwrightBot"},
 		Chat:      &tgbotapi.Chat{ID: chatID, Type: "private"},
 		Date:      int(at.Unix()),
 		Text:      text,
@@ -592,6 +603,7 @@ func toPlatformEntry(en journalEntry) platform.JournalEntry {
 		Version:      en.version,
 		Text:         en.text,
 		At:           en.at,
+		FromID:       en.fromID,
 	}
 	if en.dir == fromBot {
 		pe.Direction = platform.DirectionBot

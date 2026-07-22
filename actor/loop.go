@@ -59,7 +59,7 @@ type Config struct {
 	// observe.Observation it produces (see Loop.Observations). Retention is
 	// ON by default (the zero value is false) — a campaign's entire purpose
 	// is producing evidence, and the retained observation bodies are what
-	// let a campaign.Bundle stay self-contained: a player can show exactly
+	// let a bundle.Bundle stay self-contained: a player can show exactly
 	// what the actor saw at each step without re-deriving it from a
 	// transcript. Set this true only when a campaign is long enough, or
 	// memory-bounded enough, that holding every Observation body for its

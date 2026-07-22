@@ -84,6 +84,16 @@ type JournalEntry struct {
 	Actions      [][]Action // JournalEntryMessage only: actions attached to this entry, in platform row/col layout
 	Method       string     // JournalEntryUncaptured only: the Bot API method name that was called
 	At           time.Time
+
+	// FromID is the platform-native identity of this entry's originator:
+	// the Telegram user id of the client actor for a client-originated
+	// entry, or the bot's own id for a bot-originated entry. It is 0 when
+	// no identity is available (e.g. a pure method-call record with no
+	// resolvable sender) — a Platform never invents an identity it does not
+	// actually know. This is what lets a run-bundle roster (see the bundle
+	// package's Actor.PlatformIdentities) attribute every journal entry to
+	// whoever produced it.
+	FromID int64
 }
 
 // Emulator is a running fake platform API server. It owns everything about
