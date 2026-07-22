@@ -20,7 +20,7 @@ import (
 
 	"github.com/bots-go-framework/bots-api-whatsapp/wabotapi"
 
-	"github.com/chatwright/chatwright/platform"
+	"github.com/chatwright/chatwright/chatwrite/platform"
 )
 
 // Platform returns the WhatsApp platform for use with chatwright.OnPlatform.

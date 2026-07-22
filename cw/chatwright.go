@@ -28,8 +28,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/chatwright/chatwright/platform"
-	"github.com/chatwright/chatwright/telegram"
+	"github.com/chatwright/chatwright/chatwrite/platform"
+	"github.com/chatwright/chatwright/chatwrite/telegram"
 )
 
 // User identifies a participant in a conversation. ID is a stable handle (e.g.
