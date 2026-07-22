@@ -222,10 +222,14 @@ type Action struct {
 func (a *Action) Click() *Chat {
 	a.chat.cw.t.Helper()
 	a.chat.lastSent = time.Now()
+	var err error
 	if a.act.ID != "" {
-		a.chat.cw.deliverCallback(a.chat.chatID, a.chat.user, a.act.ID, a.messageID)
+		err = a.chat.cw.emu.SubmitClick(a.chat.chatID, a.chat.user, a.act.ID, a.messageID)
 	} else {
-		a.chat.cw.deliverText(a.chat.chatID, a.chat.user, a.act.Label)
+		err = a.chat.cw.emu.SubmitText(a.chat.chatID, a.chat.user, a.act.Label)
+	}
+	if err != nil {
+		a.chat.cw.t.Fatalf("chatwright: %v", err)
 	}
 	return a.chat
 }

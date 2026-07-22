@@ -10,6 +10,7 @@
 package telegram
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -66,14 +67,23 @@ type journalEntry struct {
 	at           time.Time
 }
 
-// Emulator is an in-process HTTP server emulating the Telegram Bot API.
+// Emulator is an in-process HTTP server emulating the Telegram Bot API. It
+// owns delivery of updates to the bot-under-test: SubmitText/SubmitClick
+// build the platform-native update and either push it to a configured
+// webhook or queue it for the bot to retrieve via getUpdates — the harness
+// never builds wire bytes or POSTs them itself.
 type Emulator struct {
 	server *httptest.Server
 
 	mu        sync.Mutex
 	journal   []journalEntry
 	nextMsgID map[int64]int // per-chat shared message-ID sequence, inbound and outbound alike
-	updated   chan struct{} // closed (and replaced) on every new journal entry; broadcast signal
+	updated   chan struct{} // closed (and replaced) on every journal append or queued update; broadcast signal
+
+	nextUpdateID int
+	webhookURL   string
+	httpClient   *http.Client
+	pending      []tgbotapi.Update // queued for getUpdates while no webhook is configured
 }
 
 // NewEmulator starts a fake Telegram Bot API server on a random local port.
@@ -93,6 +103,16 @@ func (e *Emulator) BotAPIURL() string { return e.server.URL }
 // Close shuts down the emulator's HTTP server.
 func (e *Emulator) Close() { e.server.Close() }
 
+// SetWebhook registers the URL (and HTTP client) the emulator pushes updates
+// to. Passing an empty url clears it, switching delivery back to queuing
+// updates for getUpdates.
+func (e *Emulator) SetWebhook(url string, client *http.Client) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.webhookURL = url
+	e.httpClient = client
+}
+
 // reserveMessageIDLocked returns the next ID in chatID's shared message-ID
 // sequence, starting at 1. Caller must hold e.mu.
 func (e *Emulator) reserveMessageIDLocked(chatID int64) int {
@@ -100,10 +120,24 @@ func (e *Emulator) reserveMessageIDLocked(chatID int64) int {
 	return e.nextMsgID[chatID]
 }
 
+// reserveUpdateIDLocked returns the next Bot API update_id, starting at 1.
+// Caller must hold e.mu.
+func (e *Emulator) reserveUpdateIDLocked() int {
+	e.nextUpdateID++
+	return e.nextUpdateID
+}
+
 // appendLocked appends entry to the journal and wakes any waiters. Caller must
 // hold e.mu.
 func (e *Emulator) appendLocked(entry journalEntry) {
 	e.journal = append(e.journal, entry)
+	e.wakeLocked()
+}
+
+// wakeLocked broadcasts a state-change signal to anything blocked waiting on
+// e.updated (WaitForMessage, WaitForEdit, a long-polling getUpdates call).
+// Caller must hold e.mu.
+func (e *Emulator) wakeLocked() {
 	close(e.updated)
 	e.updated = make(chan struct{})
 }
@@ -121,69 +155,99 @@ func (e *Emulator) latestTextEntryLocked(chatID int64, messageID int) (journalEn
 	return journalEntry{}, false
 }
 
-// RecordInboundText reserves the next message ID in chatID's shared sequence
-// and appends an inbound journal entry for it.
-func (e *Emulator) RecordInboundText(chatID int64, user platform.User, text string) int {
+// SubmitText delivers a user's text message to the bot-under-test: it
+// reserves the message's ID from chatID's shared sequence, journals the
+// inbound event, builds the Telegram update, and delivers it.
+func (e *Emulator) SubmitText(chatID int64, user platform.User, text string) error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	id := e.reserveMessageIDLocked(chatID)
-	e.appendLocked(journalEntry{chatID: chatID, dir: fromUser, kind: kindText, messageID: id, text: text, at: time.Now()})
-	return id
-}
+	msgID := e.reserveMessageIDLocked(chatID)
+	e.appendLocked(journalEntry{chatID: chatID, dir: fromUser, kind: kindText, messageID: msgID, text: text, at: time.Now()})
+	updateID := e.reserveUpdateIDLocked()
+	webhookURL, client := e.webhookURL, e.httpClient
+	e.mu.Unlock()
 
-// RecordInboundCallback appends a journal entry for a button click. It does
-// not reserve a message ID: a callback query references an existing message
-// rather than creating a new one.
-func (e *Emulator) RecordInboundCallback(chatID int64, user platform.User, data string, targetMessageID int) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.appendLocked(journalEntry{chatID: chatID, dir: fromUser, kind: kindCallback, refMessageID: targetMessageID, text: data, at: time.Now()})
-}
-
-// EncodeInboundText builds a Telegram update carrying a user's text message.
-func (e *Emulator) EncodeInboundText(in platform.Inbound) (string, []byte) {
 	update := tgbotapi.Update{
-		UpdateID: in.UpdateID,
+		UpdateID: updateID,
 		Message: &tgbotapi.Message{
-			MessageID: in.MessageID,
+			MessageID: msgID,
 			From: &tgbotapi.User{
-				ID:        in.User.ID,
-				FirstName: in.User.FirstName,
-				LastName:  in.User.LastName,
-				UserName:  in.User.Username,
+				ID:        user.ID,
+				FirstName: user.FirstName,
+				LastName:  user.LastName,
+				UserName:  user.Username,
 			},
-			Chat: &tgbotapi.Chat{ID: in.ChatID, Type: "private", FirstName: in.User.FirstName},
+			Chat: &tgbotapi.Chat{ID: chatID, Type: "private", FirstName: user.FirstName},
 			Date: int(time.Now().Unix()),
-			Text: in.Text,
+			Text: text,
 		},
 	}
-	body, _ := json.Marshal(update)
-	return "application/json", body
+	return e.deliver(update, webhookURL, client)
 }
 
-// EncodeCallback builds a Telegram callback query (an inline-button click).
-func (e *Emulator) EncodeCallback(in platform.InboundCallback) (string, []byte) {
-	from := &tgbotapi.User{
-		ID:        in.User.ID,
-		FirstName: in.User.FirstName,
-		LastName:  in.User.LastName,
-		UserName:  in.User.Username,
-	}
+// SubmitClick delivers a user's button click (an interactive action
+// activation) to the bot-under-test as a Telegram callback query. It does not
+// reserve a message ID: a callback query references an existing message
+// (targetMessageID) rather than creating a new one.
+func (e *Emulator) SubmitClick(chatID int64, user platform.User, data string, targetMessageID int) error {
+	e.mu.Lock()
+	e.appendLocked(journalEntry{chatID: chatID, dir: fromUser, kind: kindCallback, refMessageID: targetMessageID, text: data, at: time.Now()})
+	updateID := e.reserveUpdateIDLocked()
+	webhookURL, client := e.webhookURL, e.httpClient
+	e.mu.Unlock()
+
 	update := tgbotapi.Update{
-		UpdateID: in.UpdateID,
+		UpdateID: updateID,
 		CallbackQuery: &tgbotapi.CallbackQuery{
-			ID:   in.CallbackID,
-			From: from,
-			Data: in.Data,
+			ID: "cb" + strconv.Itoa(updateID),
+			From: &tgbotapi.User{
+				ID:        user.ID,
+				FirstName: user.FirstName,
+				LastName:  user.LastName,
+				UserName:  user.Username,
+			},
+			Data: data,
 			Message: &tgbotapi.Message{
-				MessageID: in.MessageID,
+				MessageID: targetMessageID,
 				From:      &tgbotapi.User{ID: 1, IsBot: true, FirstName: "ChatwrightBot"},
-				Chat:      &tgbotapi.Chat{ID: in.ChatID, Type: "private", FirstName: in.User.FirstName},
+				Chat:      &tgbotapi.Chat{ID: chatID, Type: "private", FirstName: user.FirstName},
 			},
 		},
 	}
-	body, _ := json.Marshal(update)
-	return "application/json", body
+	return e.deliver(update, webhookURL, client)
+}
+
+// deliver pushes update to webhookURL over HTTP if one is configured — this
+// blocks until the bot-under-test's handler returns, exactly like a real
+// webhook push, which is why every SendText/Click call in a scenario can
+// assume the bot has already processed it by the time the call returns.
+// Otherwise it queues the update for the bot to retrieve via getUpdates,
+// mirroring how a real Telegram bot token is either webhook- or
+// polling-driven, never both.
+func (e *Emulator) deliver(update tgbotapi.Update, webhookURL string, client *http.Client) error {
+	if webhookURL == "" {
+		e.mu.Lock()
+		e.pending = append(e.pending, update)
+		e.wakeLocked()
+		e.mu.Unlock()
+		return nil
+	}
+
+	body, err := json.Marshal(update)
+	if err != nil {
+		return fmt.Errorf("chatwright: encode update: %w", err)
+	}
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Post(webhookURL, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("chatwright: deliver update to webhook: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("chatwright: webhook returned status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // handle routes /bot<token>/<method> like the real Bot API.
@@ -193,6 +257,8 @@ func (e *Emulator) handle(w http.ResponseWriter, r *http.Request) {
 	switch method {
 	case "getMe":
 		writeResult(w, tgbotapi.User{ID: 1, IsBot: true, FirstName: "ChatwrightBot", UserName: "chatwright_bot"})
+	case "getUpdates":
+		e.handleGetUpdates(w, r)
 	case "sendMessage":
 		e.handleSendMessage(w, r)
 	case "editMessageText":
@@ -202,6 +268,62 @@ func (e *Emulator) handle(w http.ResponseWriter, r *http.Request) {
 		// answerCallbackQuery, setMyCommands, ...) so arbitrary bots don't error.
 		writeResult(w, true)
 	}
+}
+
+// handleGetUpdates emulates the Bot API's long-polling endpoint: a
+// good-enough subset of https://core.telegram.org/bots/api#getupdates —
+// offset acknowledges (updates with update_id < offset are considered
+// received and dropped), and timeout (seconds) long-polls when nothing is
+// pending yet.
+func (e *Emulator) handleGetUpdates(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	offset, _ := strconv.Atoi(r.FormValue("offset"))
+	timeoutSec, _ := strconv.Atoi(r.FormValue("timeout"))
+	limit, _ := strconv.Atoi(r.FormValue("limit"))
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+
+	deadline := time.After(time.Duration(timeoutSec) * time.Second)
+	for {
+		e.mu.Lock()
+		if offset > 0 {
+			e.acknowledgeLocked(offset)
+		}
+		result := make([]tgbotapi.Update, 0, min(len(e.pending), limit))
+		for _, u := range e.pending {
+			if len(result) >= limit {
+				break
+			}
+			result = append(result, u)
+		}
+		ch := e.updated
+		e.mu.Unlock()
+
+		if len(result) > 0 || timeoutSec <= 0 {
+			writeResult(w, result)
+			return
+		}
+		select {
+		case <-ch:
+		case <-deadline:
+			writeResult(w, []tgbotapi.Update{})
+			return
+		}
+	}
+}
+
+// acknowledgeLocked drops queued updates with UpdateID < offset: once a bot
+// requests updates from offset, real Telegram considers everything before it
+// received and will not resend it. Caller must hold e.mu.
+func (e *Emulator) acknowledgeLocked(offset int) {
+	kept := e.pending[:0]
+	for _, u := range e.pending {
+		if u.UpdateID >= offset {
+			kept = append(kept, u)
+		}
+	}
+	e.pending = kept
 }
 
 func (e *Emulator) handleSendMessage(w http.ResponseWriter, r *http.Request) {

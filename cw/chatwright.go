@@ -3,8 +3,9 @@
 //
 // A scenario is written once against platform-neutral verbs — send a text, expect
 // a message, expect an action — and Chatwright maps them onto a concrete platform
-// (Telegram today, WhatsApp next). It emulates that platform's API server,
-// delivers updates to the bot's webhook over real HTTP, and captures the API
+// (Telegram today, WhatsApp next). It emulates that platform's API server, which
+// owns delivering updates to the bot-under-test (over a real HTTP webhook, or via
+// getUpdates long-polling on platforms that support it) and captures the API
 // calls the bot makes back. The bot under test may be written in any language or
 // framework — Chatwright only speaks HTTP.
 //
@@ -21,11 +22,9 @@
 package chatwright
 
 import (
-	"bytes"
 	"hash/fnv"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -51,17 +50,16 @@ type User struct {
 }
 
 // Chatwright is a single test's conversational world: an emulated platform API
-// server plus the wiring to deliver updates to the bot-under-test.
+// server plus the wiring to attach the bot-under-test's webhook (when it has
+// one). The emulator — not Chatwright — owns building updates, assigning them
+// identity, and delivering them; Chatwright only submits neutral actions.
 type Chatwright struct {
 	t testing.TB
 
 	platform platform.Platform
 	emu      platform.Emulator
 
-	webhookURL string
-	client     *http.Client
-
-	nextUpdateID int
+	client *http.Client
 
 	safetyTimeout time.Duration
 
@@ -72,14 +70,15 @@ type Chatwright struct {
 // New starts a Chatwright harness. It selects a platform (Telegram by default,
 // override with OnPlatform), boots that platform's emulated API server, and
 // registers cleanup with the test. Configure the bot-under-test with BotAPIURL,
-// then attach its webhook via ServeWebhook or WebhookAt.
+// then attach its webhook via ServeWebhook or WebhookAt — or, on platforms that
+// support it (Telegram), leave neither set and run the bot's own getUpdates
+// polling loop against BotAPIURL instead.
 func New(t testing.TB, opts ...Option) *Chatwright {
 	t.Helper()
 	cw := &Chatwright{
 		t:             t,
 		platform:      telegram.Platform(),
 		client:        http.DefaultClient,
-		nextUpdateID:  1,
 		safetyTimeout: defaultSafetyTimeout,
 	}
 	for _, opt := range opts {
@@ -104,70 +103,12 @@ func (cw *Chatwright) ServeWebhook(h http.Handler) {
 	cw.t.Helper()
 	srv := httptest.NewServer(h)
 	cw.t.Cleanup(srv.Close)
-	cw.webhookURL = srv.URL
+	cw.emu.SetWebhook(srv.URL, cw.client)
 }
 
 // WebhookAt points Chatwright at an already-running bot webhook (a bot process
-// started separately, in any language). Updates are POSTed to url.
-func (cw *Chatwright) WebhookAt(url string) { cw.webhookURL = url }
-
-// deliverText encodes a user's text for the active platform and POSTs it to the
-// bot-under-test's webhook. The message ID is reserved from the emulator's
-// shared per-chat sequence (and recorded in its journal) before encoding, so
-// inbound and outbound messages in a chat never collide.
-func (cw *Chatwright) deliverText(chatID int64, user platform.User, text string) {
-	cw.t.Helper()
-	if cw.webhookURL == "" {
-		cw.t.Fatalf("chatwright: no webhook configured; call ServeWebhook or WebhookAt before sending")
-		return
-	}
-	messageID := cw.emu.RecordInboundText(chatID, user, text)
-	contentType, body := cw.emu.EncodeInboundText(platform.Inbound{
-		ChatID:    chatID,
-		User:      user,
-		Text:      text,
-		UpdateID:  cw.nextUpdateID,
-		MessageID: messageID,
-	})
-	cw.nextUpdateID++
-
-	cw.post(contentType, body)
-}
-
-// deliverCallback encodes a button click for the active platform and POSTs it to
-// the bot-under-test's webhook.
-func (cw *Chatwright) deliverCallback(chatID int64, user platform.User, data string, messageID int) {
-	cw.t.Helper()
-	if cw.webhookURL == "" {
-		cw.t.Fatalf("chatwright: no webhook configured; call ServeWebhook or WebhookAt before clicking")
-		return
-	}
-	cw.emu.RecordInboundCallback(chatID, user, data, messageID)
-	contentType, body := cw.emu.EncodeCallback(platform.InboundCallback{
-		ChatID:     chatID,
-		User:       user,
-		Data:       data,
-		MessageID:  messageID,
-		UpdateID:   cw.nextUpdateID,
-		CallbackID: "cb" + strconv.Itoa(cw.nextUpdateID),
-	})
-	cw.nextUpdateID++
-	cw.post(contentType, body)
-}
-
-// post delivers an encoded webhook payload to the bot-under-test.
-func (cw *Chatwright) post(contentType string, body []byte) {
-	cw.t.Helper()
-	resp, err := cw.client.Post(cw.webhookURL, contentType, bytes.NewReader(body))
-	if err != nil {
-		cw.t.Fatalf("chatwright: deliver update to webhook: %v", err)
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 300 {
-		cw.t.Fatalf("chatwright: webhook returned status %d", resp.StatusCode)
-	}
-}
+// started separately, in any language). The emulator POSTs updates to url.
+func (cw *Chatwright) WebhookAt(url string) { cw.emu.SetWebhook(url, cw.client) }
 
 // userChatID maps a string user handle to a stable positive int64 platform ID.
 func userChatID(handle string) int64 {

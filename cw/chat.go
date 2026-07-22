@@ -48,12 +48,16 @@ func (cw *Chatwright) PrivateChat(u User) *Chat {
 	return c
 }
 
-// SendText delivers a text message from the user to the bot-under-test. Chatwright
-// encodes it for the active platform and POSTs it to the bot's webhook.
+// SendText delivers a text message from the user to the bot-under-test. The
+// emulator builds the platform-native update and delivers it — over the
+// bot's webhook, or by queuing it for getUpdates on platforms that support
+// polling — Chatwright itself never touches the wire.
 func (c *Chat) SendText(text string) *Chat {
 	c.cw.t.Helper()
 	c.lastSent = time.Now()
-	c.cw.deliverText(c.chatID, c.user, text)
+	if err := c.cw.emu.SubmitText(c.chatID, c.user, text); err != nil {
+		c.cw.t.Fatalf("chatwright: %v", err)
+	}
 	return c
 }
 

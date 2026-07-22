@@ -10,6 +10,7 @@
 package whatsapp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -63,7 +64,11 @@ type journalEntry struct {
 	at           time.Time
 }
 
-// Emulator is an in-process HTTP server emulating the WhatsApp Cloud API.
+// Emulator is an in-process HTTP server emulating the WhatsApp Cloud API. It
+// owns delivery of updates to the bot-under-test: SubmitText/SubmitClick
+// build the inbound webhook payload and push it to the configured webhook —
+// the harness never builds wire bytes or POSTs them itself. Unlike Telegram,
+// the WhatsApp Cloud API has no polling mode, so a webhook is required.
 type Emulator struct {
 	server *httptest.Server
 
@@ -71,6 +76,10 @@ type Emulator struct {
 	journal   []journalEntry
 	nextMsgID map[int64]int // per-chat shared message-ID sequence, inbound and outbound alike
 	updated   chan struct{}
+
+	nextEventID int // source for synthetic wamid values that aren't tied to a chat message ID (e.g. interactive-reply clicks)
+	webhookURL  string
+	httpClient  *http.Client
 }
 
 // NewEmulator starts a fake WhatsApp Cloud API server on a random local port.
@@ -87,11 +96,28 @@ func (e *Emulator) BotAPIURL() string { return e.server.URL }
 // Close shuts down the emulator's HTTP server.
 func (e *Emulator) Close() { e.server.Close() }
 
+// SetWebhook registers the URL (and HTTP client) the emulator pushes inbound
+// webhooks to. The WhatsApp Cloud API has no polling mode: Submit* calls
+// return an error until a webhook is set.
+func (e *Emulator) SetWebhook(url string, client *http.Client) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.webhookURL = url
+	e.httpClient = client
+}
+
 // reserveMessageIDLocked returns the next ID in chatID's shared message-ID
 // sequence, starting at 1. Caller must hold e.mu.
 func (e *Emulator) reserveMessageIDLocked(chatID int64) int {
 	e.nextMsgID[chatID]++
 	return e.nextMsgID[chatID]
+}
+
+// reserveEventIDLocked returns the next synthetic event ID, starting at 1.
+// Caller must hold e.mu.
+func (e *Emulator) reserveEventIDLocked() int {
+	e.nextEventID++
+	return e.nextEventID
 }
 
 // appendLocked appends entry to the journal and wakes any waiters. Caller must
@@ -102,30 +128,23 @@ func (e *Emulator) appendLocked(entry journalEntry) {
 	e.updated = make(chan struct{})
 }
 
-// RecordInboundText reserves the next message ID in chatID's shared sequence
-// and appends an inbound journal entry for it.
-func (e *Emulator) RecordInboundText(chatID int64, user platform.User, text string) int {
+// SubmitText delivers a user's text message to the bot-under-test: it
+// reserves the message's ID from chatID's shared sequence, journals the
+// inbound event, builds the WhatsApp inbound webhook payload, and pushes it.
+// The wabotapi adapter does not yet model inbound text bodies, so the text
+// object is built here per the documented WhatsApp Cloud API webhook shape.
+func (e *Emulator) SubmitText(chatID int64, user platform.User, text string) error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	id := e.reserveMessageIDLocked(chatID)
-	e.appendLocked(journalEntry{chatID: chatID, dir: fromUser, kind: kindText, messageID: id, text: text, at: time.Now()})
-	return id
-}
+	msgID := e.reserveMessageIDLocked(chatID)
+	e.appendLocked(journalEntry{chatID: chatID, dir: fromUser, kind: kindText, messageID: msgID, text: text, at: time.Now()})
+	webhookURL, client := e.webhookURL, e.httpClient
+	e.mu.Unlock()
 
-// RecordInboundCallback appends a journal entry for an interactive-reply
-// click. It does not reserve a message ID: the click references an existing
-// message rather than creating a new one.
-func (e *Emulator) RecordInboundCallback(chatID int64, user platform.User, data string, targetMessageID int) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.appendLocked(journalEntry{chatID: chatID, dir: fromUser, kind: kindCallback, refMessageID: targetMessageID, text: data, at: time.Now()})
-}
+	if webhookURL == "" {
+		return fmt.Errorf("no webhook configured; call ServeWebhook or WebhookAt before sending (the WhatsApp Cloud API has no polling mode)")
+	}
 
-// EncodeInboundText builds a WhatsApp inbound webhook carrying a user's text.
-// The wabotapi adapter does not yet model inbound text bodies, so the text object
-// is added here per the documented WhatsApp Cloud API webhook shape.
-func (e *Emulator) EncodeInboundText(in platform.Inbound) (string, []byte) {
-	waID := strconv.FormatInt(in.ChatID, 10)
+	waID := strconv.FormatInt(chatID, 10)
 	req := inboundRequest{
 		Object: "whatsapp_business_account",
 		Entry: []inboundEntry{{
@@ -136,27 +155,38 @@ func (e *Emulator) EncodeInboundText(in platform.Inbound) (string, []byte) {
 					MessagingProduct: "whatsapp",
 					Metadata:         wabotapi.WebhookMetadata{DisplayPhoneNumber: "15550000000", PhoneNumberID: "chatwright-phone"},
 					Contacts: []wabotapi.WebhookContact{{
-						Profile: wabotapi.WebhookContactProfile{Name: in.User.FirstName},
+						Profile: wabotapi.WebhookContactProfile{Name: user.FirstName},
 						WaID:    waID,
 					}},
 					Messages: []inboundMessage{{
 						From:      waID,
-						ID:        "wamid." + strconv.Itoa(in.MessageID),
+						ID:        "wamid." + strconv.Itoa(msgID),
 						Timestamp: strconv.FormatInt(time.Now().Unix(), 10),
 						Type:      string(wabotapi.InboundMessageTypeText),
-						Text:      &inboundText{Body: in.Text},
+						Text:      &inboundText{Body: text},
 					}},
 				},
 			}},
 		}},
 	}
-	body, _ := json.Marshal(req)
-	return "application/json", body
+	return e.post(webhookURL, client, req)
 }
 
-// EncodeCallback builds an inbound WhatsApp interactive button reply (a click).
-func (e *Emulator) EncodeCallback(in platform.InboundCallback) (string, []byte) {
-	waID := strconv.FormatInt(in.ChatID, 10)
+// SubmitClick delivers a user's interactive-reply click to the bot-under-test.
+// It does not reserve a message ID: the click references an existing message
+// (targetMessageID) rather than creating a new one.
+func (e *Emulator) SubmitClick(chatID int64, user platform.User, data string, targetMessageID int) error {
+	e.mu.Lock()
+	e.appendLocked(journalEntry{chatID: chatID, dir: fromUser, kind: kindCallback, refMessageID: targetMessageID, text: data, at: time.Now()})
+	eventID := e.reserveEventIDLocked()
+	webhookURL, client := e.webhookURL, e.httpClient
+	e.mu.Unlock()
+
+	if webhookURL == "" {
+		return fmt.Errorf("no webhook configured; call ServeWebhook or WebhookAt before clicking (the WhatsApp Cloud API has no polling mode)")
+	}
+
+	waID := strconv.FormatInt(chatID, 10)
 	req := inboundRequest{
 		Object: "whatsapp_business_account",
 		Entry: []inboundEntry{{
@@ -167,25 +197,47 @@ func (e *Emulator) EncodeCallback(in platform.InboundCallback) (string, []byte) 
 					MessagingProduct: "whatsapp",
 					Metadata:         wabotapi.WebhookMetadata{DisplayPhoneNumber: "15550000000", PhoneNumberID: "chatwright-phone"},
 					Contacts: []wabotapi.WebhookContact{{
-						Profile: wabotapi.WebhookContactProfile{Name: in.User.FirstName},
+						Profile: wabotapi.WebhookContactProfile{Name: user.FirstName},
 						WaID:    waID,
 					}},
 					Messages: []inboundMessage{{
 						From:      waID,
-						ID:        "wamid." + strconv.Itoa(in.UpdateID),
+						ID:        "wamid." + strconv.Itoa(eventID),
 						Timestamp: strconv.FormatInt(time.Now().Unix(), 10),
 						Type:      string(wabotapi.InboundMessageTypeInteractive),
 						Interactive: &inboundInteractive{
 							Type:        "button_reply",
-							ButtonReply: &inboundButtonReply{ID: in.Data, Title: in.Data},
+							ButtonReply: &inboundButtonReply{ID: data, Title: data},
 						},
 					}},
 				},
 			}},
 		}},
 	}
-	body, _ := json.Marshal(req)
-	return "application/json", body
+	return e.post(webhookURL, client, req)
+}
+
+// post JSON-encodes req and POSTs it to webhookURL, blocking until the
+// bot-under-test's handler returns — exactly like a real webhook push, which
+// is why every SendText/Click call in a scenario can assume the bot has
+// already processed it by the time the call returns.
+func (e *Emulator) post(webhookURL string, client *http.Client, req inboundRequest) error {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("chatwright: encode update: %w", err)
+	}
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Post(webhookURL, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("chatwright: deliver update to webhook: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("chatwright: webhook returned status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // handle emulates POST /{version}/{phoneNumberID}/messages.
