@@ -54,7 +54,6 @@ type Chatwright struct {
 	client     *http.Client
 
 	nextUpdateID int
-	nextInMsgID  int
 
 	chatsMu sync.Mutex
 	chats   map[int64]*Chat // cached by chatID so PrivateChat returns a stable handle per user
@@ -71,7 +70,6 @@ func New(t testing.TB, opts ...Option) *Chatwright {
 		platform:     telegram.Platform(),
 		client:       http.DefaultClient,
 		nextUpdateID: 1,
-		nextInMsgID:  1,
 	}
 	for _, opt := range opts {
 		opt(cw)
@@ -103,22 +101,24 @@ func (cw *Chatwright) ServeWebhook(h http.Handler) {
 func (cw *Chatwright) WebhookAt(url string) { cw.webhookURL = url }
 
 // deliverText encodes a user's text for the active platform and POSTs it to the
-// bot-under-test's webhook.
+// bot-under-test's webhook. The message ID is reserved from the emulator's
+// shared per-chat sequence (and recorded in its journal) before encoding, so
+// inbound and outbound messages in a chat never collide.
 func (cw *Chatwright) deliverText(chatID int64, user platform.User, text string) {
 	cw.t.Helper()
 	if cw.webhookURL == "" {
 		cw.t.Fatalf("chatwright: no webhook configured; call ServeWebhook or WebhookAt before sending")
 		return
 	}
+	messageID := cw.emu.RecordInboundText(chatID, user, text)
 	contentType, body := cw.emu.EncodeInboundText(platform.Inbound{
 		ChatID:    chatID,
 		User:      user,
 		Text:      text,
 		UpdateID:  cw.nextUpdateID,
-		MessageID: cw.nextInMsgID,
+		MessageID: messageID,
 	})
 	cw.nextUpdateID++
-	cw.nextInMsgID++
 
 	cw.post(contentType, body)
 }
@@ -131,6 +131,7 @@ func (cw *Chatwright) deliverCallback(chatID int64, user platform.User, data str
 		cw.t.Fatalf("chatwright: no webhook configured; call ServeWebhook or WebhookAt before clicking")
 		return
 	}
+	cw.emu.RecordInboundCallback(chatID, user, data, messageID)
 	contentType, body := cw.emu.EncodeCallback(platform.InboundCallback{
 		ChatID:     chatID,
 		User:       user,

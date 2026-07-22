@@ -59,13 +59,15 @@ func (m *BotMessage) resolve() {
 	if m.editOf != nil {
 		msg, ok = m.chat.cw.emu.WaitForEdit(m.chat.chatID, m.editOf.MessageID, m.editOf.Version, m.timeout)
 		if !ok {
-			m.chat.cw.t.Fatalf("chatwright: expected message %d to be edited within %s, but it was not", m.editOf.MessageID, m.timeout)
+			m.chat.cw.t.Fatalf("chatwright: expected message %d to be edited within %s, but it was not\n%s",
+				m.editOf.MessageID, m.timeout, m.chat.cw.emu.Transcript(m.chat.chatID))
 			return
 		}
 	} else {
 		msg, ok = m.chat.cw.emu.WaitForMessage(m.chat.chatID, m.chat.consumed, m.timeout)
 		if !ok {
-			m.chat.cw.t.Fatalf("chatwright: expected a bot message within %s, but none arrived", m.timeout)
+			m.chat.cw.t.Fatalf("chatwright: expected a bot message within %s, but none arrived\n%s",
+				m.timeout, m.chat.cw.emu.Transcript(m.chat.chatID))
 			return
 		}
 		m.chat.consumed++
@@ -172,7 +174,8 @@ func (m *BotMessage) action(row, col int) *platform.Action {
 	m.resolve()
 	rows := m.msg.Actions
 	if row < 0 || row >= len(rows) || col < 0 || col >= len(rows[row]) {
-		m.chat.cw.t.Fatalf("chatwright: expected an action at [%d,%d], but it is missing", row, col)
+		m.chat.cw.t.Fatalf("chatwright: expected an action at [%d,%d], but it is missing\n%s",
+			row, col, m.chat.cw.emu.Transcript(m.chat.chatID))
 		return nil
 	}
 	return &rows[row][col]

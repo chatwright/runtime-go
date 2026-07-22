@@ -58,8 +58,11 @@ type Message struct {
 	Version    int // 0 for the original send; incremented on each in-place edit
 }
 
-// Emulator is a running fake platform API server. It encodes inbound updates and
-// captures the bot's outbound calls, normalized to the neutral types above.
+// Emulator is a running fake platform API server. It records every inbound and
+// outbound event in an append-only per-chat journal and captures the bot's
+// outbound calls, normalized to the neutral types above. Current message state
+// is derived from the journal; nothing is mutated in place, so edit history
+// survives and a transcript can always be reconstructed.
 type Emulator interface {
 	// BotAPIURL is the base URL the bot-under-test must use for this platform's
 	// API, in place of the real one (api.telegram.org, graph.facebook.com, ...).
@@ -67,6 +70,19 @@ type Emulator interface {
 
 	// Close shuts the emulator's HTTP server down.
 	Close()
+
+	// RecordInboundText reserves the next message ID in chatID's shared
+	// per-chat message-ID sequence — inbound and outbound messages draw from
+	// the same counter, matching how Telegram scopes message_id per chat — and
+	// appends an inbound journal entry for it. The caller embeds the returned
+	// ID in the platform-native update it then builds with EncodeInboundText.
+	RecordInboundText(chatID int64, user User, text string) (messageID int)
+
+	// RecordInboundCallback appends a journal entry for the user activating an
+	// interactive action (button) on the bot message identified by
+	// targetMessageID. A callback query does not occupy its own slot in the
+	// per-chat message-ID sequence.
+	RecordInboundCallback(chatID int64, user User, data string, targetMessageID int)
 
 	// EncodeInboundText encodes a user text message as this platform's webhook
 	// payload, returning the content type and body to POST to the bot's webhook.
@@ -85,6 +101,11 @@ type Emulator interface {
 	// afterVersion), returning its new content normalized, or false on timeout.
 	// Platforms with no message-edit capability may return false immediately.
 	WaitForEdit(chatID int64, messageID int, afterVersion int, timeout time.Duration) (*Message, bool)
+
+	// Transcript renders a chronological, human-readable dump of everything
+	// recorded for chatID — inbound and outbound alike, edits shown as their
+	// current version — for inclusion in assertion failure messages.
+	Transcript(chatID int64) string
 }
 
 // Platform maps neutral scenario operations onto a concrete chat platform.

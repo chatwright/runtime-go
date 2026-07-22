@@ -11,6 +11,7 @@ package whatsapp
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -32,26 +33,49 @@ func (waPlatform) Name() string { return "whatsapp" }
 
 func (waPlatform) Start() platform.Emulator { return NewEmulator() }
 
-type outgoing struct {
-	chatID     int64
-	messageID  int
-	text       string
-	receivedAt time.Time
+// journalDirection distinguishes who produced a journal entry.
+type journalDirection int
+
+const (
+	fromUser journalDirection = iota
+	fromBot
+)
+
+// journalKind distinguishes the shape of a journal entry.
+type journalKind int
+
+const (
+	kindText     journalKind = iota // an inbound message or an outbound send
+	kindCallback                    // an inbound interactive-reply click
+)
+
+// journalEntry is one immutable entry in a chat's append-only event journal.
+// The WhatsApp Cloud API has no message-edit endpoint, so unlike Telegram's
+// journal there is no version concept here: every kindText entry is a
+// distinct message.
+type journalEntry struct {
+	chatID       int64
+	dir          journalDirection
+	kind         journalKind
+	messageID    int // own identity, shared by inbound and outbound messages in this chat; 0 for entries with no message identity of their own (callbacks)
+	refMessageID int // kindCallback only: the bot message the click targeted
+	text         string
+	at           time.Time
 }
 
 // Emulator is an in-process HTTP server emulating the WhatsApp Cloud API.
 type Emulator struct {
 	server *httptest.Server
 
-	mu            sync.Mutex
-	calls         []*outgoing
-	nextMessageID int
-	updated       chan struct{}
+	mu        sync.Mutex
+	journal   []journalEntry
+	nextMsgID map[int64]int // per-chat shared message-ID sequence, inbound and outbound alike
+	updated   chan struct{}
 }
 
 // NewEmulator starts a fake WhatsApp Cloud API server on a random local port.
 func NewEmulator() *Emulator {
-	e := &Emulator{nextMessageID: 1, updated: make(chan struct{})}
+	e := &Emulator{nextMsgID: make(map[int64]int), updated: make(chan struct{})}
 	e.server = httptest.NewServer(http.HandlerFunc(e.handle))
 	return e
 }
@@ -62,6 +86,40 @@ func (e *Emulator) BotAPIURL() string { return e.server.URL }
 
 // Close shuts down the emulator's HTTP server.
 func (e *Emulator) Close() { e.server.Close() }
+
+// reserveMessageIDLocked returns the next ID in chatID's shared message-ID
+// sequence, starting at 1. Caller must hold e.mu.
+func (e *Emulator) reserveMessageIDLocked(chatID int64) int {
+	e.nextMsgID[chatID]++
+	return e.nextMsgID[chatID]
+}
+
+// appendLocked appends entry to the journal and wakes any waiters. Caller must
+// hold e.mu.
+func (e *Emulator) appendLocked(entry journalEntry) {
+	e.journal = append(e.journal, entry)
+	close(e.updated)
+	e.updated = make(chan struct{})
+}
+
+// RecordInboundText reserves the next message ID in chatID's shared sequence
+// and appends an inbound journal entry for it.
+func (e *Emulator) RecordInboundText(chatID int64, user platform.User, text string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	id := e.reserveMessageIDLocked(chatID)
+	e.appendLocked(journalEntry{chatID: chatID, dir: fromUser, kind: kindText, messageID: id, text: text, at: time.Now()})
+	return id
+}
+
+// RecordInboundCallback appends a journal entry for an interactive-reply
+// click. It does not reserve a message ID: the click references an existing
+// message rather than creating a new one.
+func (e *Emulator) RecordInboundCallback(chatID int64, user platform.User, data string, targetMessageID int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.appendLocked(journalEntry{chatID: chatID, dir: fromUser, kind: kindCallback, refMessageID: targetMessageID, text: data, at: time.Now()})
+}
 
 // EncodeInboundText builds a WhatsApp inbound webhook carrying a user's text.
 // The wabotapi adapter does not yet model inbound text bodies, so the text object
@@ -142,11 +200,8 @@ func (e *Emulator) handle(w http.ResponseWriter, r *http.Request) {
 	chatID, _ := strconv.ParseInt(cfg.To, 10, 64)
 
 	e.mu.Lock()
-	messageID := e.nextMessageID
-	e.nextMessageID++
-	e.calls = append(e.calls, &outgoing{chatID: chatID, messageID: messageID, text: cfg.Text.Body, receivedAt: time.Now()})
-	close(e.updated)
-	e.updated = make(chan struct{})
+	messageID := e.reserveMessageIDLocked(chatID)
+	e.appendLocked(journalEntry{chatID: chatID, dir: fromBot, kind: kindText, messageID: messageID, text: cfg.Text.Body, at: time.Now()})
 	e.mu.Unlock()
 
 	// Mirror the WhatsApp Cloud API success envelope.
@@ -162,28 +217,12 @@ func (e *Emulator) WaitForMessage(chatID int64, consumed int, timeout time.Durat
 	deadline := time.After(timeout)
 	for {
 		e.mu.Lock()
-		var match *outgoing
-		seen := 0
-		for _, c := range e.calls {
-			if c.chatID == chatID {
-				if seen == consumed {
-					match = c
-					break
-				}
-				seen++
-			}
-		}
+		result := e.nthOutboundMessageLocked(chatID, consumed)
 		ch := e.updated
 		e.mu.Unlock()
 
-		if match != nil {
-			return &platform.Message{
-				Platform:   "whatsapp",
-				ChatID:     match.chatID,
-				MessageID:  match.messageID,
-				Text:       match.text,
-				ReceivedAt: match.receivedAt,
-			}, true
+		if result != nil {
+			return result, true
 		}
 		select {
 		case <-ch:
@@ -193,10 +232,69 @@ func (e *Emulator) WaitForMessage(chatID int64, consumed int, timeout time.Durat
 	}
 }
 
+// nthOutboundMessageLocked returns the (consumed+1)-th distinct bot-sent
+// message to chatID, in send order. Caller must hold e.mu.
+func (e *Emulator) nthOutboundMessageLocked(chatID int64, consumed int) *platform.Message {
+	seen := 0
+	for _, en := range e.journal {
+		if en.chatID != chatID || en.dir != fromBot || en.kind != kindText {
+			continue
+		}
+		if seen == consumed {
+			return normalize(&en)
+		}
+		seen++
+	}
+	return nil
+}
+
 // WaitForEdit always reports no edit: the WhatsApp Cloud API has no
 // message-edit endpoint, so a sent text message can never change in place.
 func (e *Emulator) WaitForEdit(int64, int, int, time.Duration) (*platform.Message, bool) {
 	return nil, false
+}
+
+// Transcript renders a chronological, human-readable dump of everything
+// recorded for chatID — inbound user messages, outbound bot messages and
+// interactive-reply clicks — for inclusion in assertion failure messages.
+func (e *Emulator) Transcript(chatID int64) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	var lines []string
+	for _, en := range e.journal {
+		if en.chatID != chatID {
+			continue
+		}
+		lines = append(lines, renderEntry(en))
+	}
+	if len(lines) == 0 {
+		return fmt.Sprintf("chat %d transcript: (empty — no messages yet)", chatID)
+	}
+	return fmt.Sprintf("chat %d transcript: %s", chatID, strings.Join(lines, " / "))
+}
+
+// renderEntry renders one transcript line for en.
+func renderEntry(en journalEntry) string {
+	if en.kind == kindCallback {
+		return fmt.Sprintf("[user] clicked %q on message %d", en.text, en.refMessageID)
+	}
+	who := "user"
+	if en.dir == fromBot {
+		who = "bot"
+	}
+	return fmt.Sprintf("[%d %s] %s", en.messageID, who, en.text)
+}
+
+// normalize converts a journal entry into a neutral message.
+func normalize(en *journalEntry) *platform.Message {
+	return &platform.Message{
+		Platform:   "whatsapp",
+		ChatID:     en.chatID,
+		MessageID:  en.messageID,
+		Text:       en.text,
+		ReceivedAt: en.at,
+	}
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

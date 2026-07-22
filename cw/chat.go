@@ -73,7 +73,8 @@ func (c *Chat) ExpectNoMessage(within time.Duration) {
 	c.cw.t.Helper()
 	msg, ok := c.cw.emu.WaitForMessage(c.chatID, c.consumed, within)
 	if ok {
-		c.cw.t.Errorf("chatwright: expected no bot message within %s, but got %q", within, msg.Text)
+		c.cw.t.Errorf("chatwright: expected no bot message within %s, but got %q\n%s",
+			within, msg.Text, c.cw.emu.Transcript(c.chatID))
 	}
 }
 
