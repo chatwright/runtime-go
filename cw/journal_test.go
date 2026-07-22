@@ -114,7 +114,10 @@ func TestSharedPerChatMessageIDSequence(t *testing.T) {
 func TestTranscriptShowsInboundOutboundAndEdits(t *testing.T) {
 	fake := newFakeTB()
 	failed, logs := fake.run(func(tb testing.TB) {
-		cw := chatwright.New(tb)
+		// A short safety timeout keeps this test fast: Within no longer
+		// shortens the wait window itself (see within_test.go), so forcing a
+		// quick, deliberate timeout goes through WithSafetyTimeout instead.
+		cw := chatwright.New(tb, chatwright.WithSafetyTimeout(50*time.Millisecond))
 		cw.ServeWebhook(editingGreeter(cw.BotAPIURL(), "TEST:TOKEN"))
 
 		chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
@@ -124,8 +127,9 @@ func TestTranscriptShowsInboundOutboundAndEdits(t *testing.T) {
 		chat.SendText("/edit")
 		msg.ExpectEdited().Within(time.Second).Text("Hello, edited")
 
-		// Nothing more is coming: force a timeout to capture the transcript.
-		chat.ExpectBotMessage().Within(50 * time.Millisecond).IsTextMessage()
+		// Nothing more is coming: the 50ms safety timeout above forces a
+		// quick timeout to capture the transcript.
+		chat.ExpectBotMessage().IsTextMessage()
 	})
 	if !failed {
 		t.Fatalf("expected the final ExpectBotMessage to time out")
@@ -147,14 +151,14 @@ func TestTranscriptShowsInboundOutboundAndEdits(t *testing.T) {
 func TestWhatsAppTranscriptOnTimeout(t *testing.T) {
 	fake := newFakeTB()
 	failed, logs := fake.run(func(tb testing.TB) {
-		cw := chatwright.New(tb, chatwright.OnPlatform(whatsapp.Platform()))
+		cw := chatwright.New(tb, chatwright.OnPlatform(whatsapp.Platform()), chatwright.WithSafetyTimeout(50*time.Millisecond))
 		cw.ServeWebhook(waGreeter(cw.BotAPIURL(), "chatwright-phone"))
 
 		chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
 		chat.SendText("Hi")
 		chat.ExpectBotMessage().Within(time.Second).Text("Howdy stranger")
 
-		chat.ExpectBotMessage().Within(50 * time.Millisecond).IsTextMessage()
+		chat.ExpectBotMessage().IsTextMessage()
 	})
 	if !failed {
 		t.Fatalf("expected the final ExpectBotMessage to time out")

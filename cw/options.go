@@ -2,6 +2,7 @@ package chatwright
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/chatwright/chatwright/platform"
 )
@@ -25,4 +26,16 @@ func WithHTTPClient(c *http.Client) Option {
 // construction time, equivalent to calling ServeWebhook after New.
 func WithWebhookHandler(h http.Handler) Option {
 	return func(cw *Chatwright) { cw.ServeWebhook(h) }
+}
+
+// WithSafetyTimeout overrides the wall-clock ceiling Chatwright waits for a
+// bot reply before failing a test (default 5s). It applies to every
+// BotMessage wait regardless of any per-assertion Within budget: Within
+// records a latency budget asserted once a reply arrives, but never shortens
+// how long Chatwright is willing to keep listening. Lower it in fast, tight
+// test suites to fail sooner when a bot never replies at all; raise it if the
+// bot-under-test is intrinsically slow (e.g. it calls a real, unmocked
+// external service).
+func WithSafetyTimeout(d time.Duration) Option {
+	return func(cw *Chatwright) { cw.safetyTimeout = d }
 }

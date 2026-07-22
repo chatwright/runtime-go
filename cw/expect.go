@@ -9,12 +9,16 @@ import (
 )
 
 // BotMessage is a fluent handle to a message the bot sent. Assertion methods
-// (Text, IsTextMessage, ExpectAction, ...) block until the message arrives (up to
-// the wait window) and fail the test if it does not. They are platform-neutral.
+// (Text, IsTextMessage, ExpectAction, ...) block until the message arrives —
+// up to the harness's safety timeout (see WithSafetyTimeout), regardless of
+// any Within budget — and fail the test if it never does. They are
+// platform-neutral.
 type BotMessage struct {
-	chat    *Chat
-	timeout time.Duration
+	chat *Chat
 
+	// enforceWithin and within hold the latency budget set by Within, if any.
+	// This is an assertion checked once a reply arrives, not a wait window:
+	// Within never shortens how long Chatwright keeps listening.
 	enforceWithin bool
 	within        time.Duration
 
@@ -27,10 +31,18 @@ type BotMessage struct {
 	editOf *platform.Message
 }
 
-// Within bounds how long the bot may take to reply. It both sets the wait window
-// and asserts (via the captured latency metric) that the reply arrived in time.
-// Calling it after the message has already resolved (e.g. after Text or
-// IsTextMessage) is a usage error: the wait already happened, so a timeout set
+// Within sets the latency budget a reply is judged against: once a reply
+// arrives, if it took longer than d, the test fails showing the observed
+// latency and the reply's actual text. Within does NOT shorten how long
+// Chatwright waits for that reply to arrive in the first place — that ceiling
+// is the harness's safety timeout (default 5s; see WithSafetyTimeout),
+// independent of d, so a late-but-arrived reply is a diagnostic failure
+// (expected/actual text, observed latency) rather than an opaque "none
+// arrived" timeout. If d exceeds the configured safety timeout, the wait is
+// extended to d so a generous budget is never undercut by it.
+//
+// Calling Within after the message has already resolved (e.g. after Text or
+// IsTextMessage) is a usage error: the wait already happened, so a budget set
 // now can no longer be honored. It fails the test immediately with a clear
 // message instead of silently doing nothing.
 func (m *BotMessage) Within(d time.Duration) *BotMessage {
@@ -39,7 +51,6 @@ func (m *BotMessage) Within(d time.Duration) *BotMessage {
 		m.chat.cw.t.Fatalf("chatwright: Within called after the message was already resolved; call Within before Text/IsTextMessage/ExpectAction/Metrics/Snapshot")
 		return m
 	}
-	m.timeout = d
 	m.enforceWithin = true
 	m.within = d
 	return m
@@ -54,20 +65,25 @@ func (m *BotMessage) resolve() {
 	}
 	m.chat.cw.t.Helper()
 
+	wait := m.chat.cw.safetyTimeout
+	if m.enforceWithin && m.within > wait {
+		wait = m.within
+	}
+
 	var msg *platform.Message
 	var ok bool
 	if m.editOf != nil {
-		msg, ok = m.chat.cw.emu.WaitForEdit(m.chat.chatID, m.editOf.MessageID, m.editOf.Version, m.timeout)
+		msg, ok = m.chat.cw.emu.WaitForEdit(m.chat.chatID, m.editOf.MessageID, m.editOf.Version, wait)
 		if !ok {
-			m.chat.cw.t.Fatalf("chatwright: expected message %d to be edited within %s, but it was not\n%s",
-				m.editOf.MessageID, m.timeout, m.chat.cw.emu.Transcript(m.chat.chatID))
+			m.chat.cw.t.Fatalf("chatwright: expected message %d to be edited within %s (safety timeout), but it was not\n%s",
+				m.editOf.MessageID, wait, m.chat.cw.emu.Transcript(m.chat.chatID))
 			return
 		}
 	} else {
-		msg, ok = m.chat.cw.emu.WaitForMessage(m.chat.chatID, m.chat.consumed, m.timeout)
+		msg, ok = m.chat.cw.emu.WaitForMessage(m.chat.chatID, m.chat.consumed, wait)
 		if !ok {
-			m.chat.cw.t.Fatalf("chatwright: expected a bot message within %s, but none arrived\n%s",
-				m.timeout, m.chat.cw.emu.Transcript(m.chat.chatID))
+			m.chat.cw.t.Fatalf("chatwright: expected a bot message within %s (safety timeout), but none arrived\n%s",
+				wait, m.chat.cw.emu.Transcript(m.chat.chatID))
 			return
 		}
 		m.chat.consumed++
@@ -79,7 +95,7 @@ func (m *BotMessage) resolve() {
 		m.latency = lat
 	}
 	if m.enforceWithin && m.latency > m.within {
-		m.chat.cw.t.Errorf("chatwright: bot replied in %s, want within %s", m.latency, m.within)
+		m.chat.cw.t.Errorf("chatwright: reply arrived after %s, budget %s: %q", m.latency, m.within, msg.Text)
 	}
 }
 
@@ -134,12 +150,13 @@ func (m *BotMessage) TextMatches(pattern string) *BotMessage {
 // ExpectEdited returns a fluent handle that waits for this message to be
 // edited in place (e.g. a Telegram editMessageText call) and asserts on its new
 // content — the same assertion methods as ExpectBotMessage, but bound to this
-// message's identity rather than to the next outbound message. The wait window
-// defaults to this handle's own (5s unless overridden); narrow it with Within.
+// message's identity rather than to the next outbound message. Like
+// ExpectBotMessage, it waits up to the harness's safety timeout and starts
+// with no latency budget of its own; add one with Within.
 func (m *BotMessage) ExpectEdited() *BotMessage {
 	m.chat.cw.t.Helper()
 	m.resolve()
-	return m.chat.newBotMessage(m.timeout, m.msg)
+	return m.chat.newBotMessage(m.msg)
 }
 
 // Metrics returns the metrics captured for this message.

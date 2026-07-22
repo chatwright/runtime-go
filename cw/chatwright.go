@@ -28,10 +28,18 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/chatwright/chatwright/platform"
 	"github.com/chatwright/chatwright/telegram"
 )
+
+// defaultSafetyTimeout is the wall-clock ceiling Chatwright waits for a bot
+// reply before failing a test, unless overridden with WithSafetyTimeout. It
+// is independent of any per-assertion Within budget: Within never shortens
+// the observation window, only the latency a reply is judged against once it
+// arrives. See BotMessage.Within.
+const defaultSafetyTimeout = 5 * time.Second
 
 // User identifies a participant in a conversation. ID is a stable handle (e.g.
 // "alice"); Chatwright maps it to a deterministic per-platform numeric ID.
@@ -55,6 +63,8 @@ type Chatwright struct {
 
 	nextUpdateID int
 
+	safetyTimeout time.Duration
+
 	chatsMu sync.Mutex
 	chats   map[int64]*Chat // cached by chatID so PrivateChat returns a stable handle per user
 }
@@ -66,10 +76,11 @@ type Chatwright struct {
 func New(t testing.TB, opts ...Option) *Chatwright {
 	t.Helper()
 	cw := &Chatwright{
-		t:            t,
-		platform:     telegram.Platform(),
-		client:       http.DefaultClient,
-		nextUpdateID: 1,
+		t:             t,
+		platform:      telegram.Platform(),
+		client:        http.DefaultClient,
+		nextUpdateID:  1,
+		safetyTimeout: defaultSafetyTimeout,
 	}
 	for _, opt := range opts {
 		opt(cw)

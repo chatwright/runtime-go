@@ -58,10 +58,12 @@ func (c *Chat) SendText(text string) *Chat {
 }
 
 // ExpectBotMessage asserts that the bot sends a message to this chat, returning a
-// fluent handle to assert on its content. The wait window defaults to 5s; narrow
-// it with Within.
+// fluent handle to assert on its content. Chatwright waits up to the harness's
+// safety timeout (default 5s; see WithSafetyTimeout) for it to arrive; narrow
+// the latency this is judged against — without shortening that wait — with
+// Within.
 func (c *Chat) ExpectBotMessage() *BotMessage {
-	return c.newBotMessage(5*time.Second, nil)
+	return c.newBotMessage(nil)
 }
 
 // ExpectNoMessage asserts that the bot does not send a new message to this chat
@@ -84,8 +86,8 @@ func (c *Chat) ExpectNoMessage(within time.Duration) {
 // called on it), the test fails. A bare ExpectBotMessage() call that nothing
 // ever asserts on is a silent no-op otherwise, masking bugs the scenario meant
 // to catch.
-func (c *Chat) newBotMessage(timeout time.Duration, editOf *platform.Message) *BotMessage {
-	m := &BotMessage{chat: c, timeout: timeout, editOf: editOf}
+func (c *Chat) newBotMessage(editOf *platform.Message) *BotMessage {
+	m := &BotMessage{chat: c, editOf: editOf}
 	c.cw.t.Cleanup(func() {
 		if !m.resolved {
 			c.cw.t.Errorf("chatwright: a BotMessage expectation was never resolved (call Text, IsTextMessage, ExpectAction, Metrics, or Snapshot on it, or remove it)")
