@@ -37,6 +37,19 @@ type LoopEvent struct {
 	// Action is what actually happened when the loop tried to act on
 	// Proposal (or why it did not).
 	Action ActionOutcome `json:"action"`
+
+	// ProposeError is set exactly when this iteration's call to
+	// Provider.Propose returned an error: it carries that error's own
+	// message (error.Error()), and Proposal, Usage, Validation and Action
+	// are all their zero value — there was nothing to validate or act on.
+	// Empty for every iteration that got as far as a Proposal.
+	//
+	// This field exists so a failed Propose call still leaves a LoopEvent
+	// behind — see RunTask, which appends one before returning the error —
+	// instead of vanishing from the record with only a returned Go error
+	// nobody downstream of the loop (a campaign.Report, a run bundle) ever
+	// sees (github.com/chatwright/runtime-go issue #4).
+	ProposeError string `json:"proposeError,omitempty"`
 }
 
 // ValidationOutcome is the loop's validate-step verdict for one proposal,
@@ -63,11 +76,21 @@ const (
 	// or was malformed; the loop never submitted anything to the platform.
 	ActionSkippedInvalid ActionOutcomeKind = "skipped-invalid"
 	// ActionExecuted: the proposed action was submitted to the platform and
-	// produced an observable change (a new message, an edit, or an
-	// actions-changed update).
+	// produced a semantically observable change: a new message, or an
+	// existing message whose text or action labels actually differ from
+	// before (see observedEffect/semanticallyEqualMessage in loop.go).
 	ActionExecuted ActionOutcomeKind = "executed"
 	// ActionExecutedNoEffect: the proposed action was submitted, but the
-	// next observation showed no change at all.
+	// next observation showed no semantic change — either genuinely no
+	// observe.Change at all, or the only bot-authored Changes were
+	// content-identical re-renders (e.g. a message re-edited in place with
+	// byte-identical text and the same actions, which still bumps Version
+	// and so still appears as an observe.Change — see
+	// observedEffect/semanticallyEqualMessage in loop.go). This is
+	// deliberately the same outcome kind either way: from a Provider's or a
+	// report's point of view, "the platform re-showed exactly what was
+	// already there" is not progress, regardless of whether observe's own
+	// Version bookkeeping ticked over. It is what feeds NonProgressLimit.
 	ActionExecutedNoEffect ActionOutcomeKind = "executed-no-effect"
 	// ActionResolutionFailed: a freshly validated proposal that the loop
 	// could not resolve to a concrete platform action — e.g. no button on

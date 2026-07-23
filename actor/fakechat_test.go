@@ -15,8 +15,8 @@ import (
 // paths — without a real platform emulator underneath. The real Telegram
 // emulator is exercised separately, in the end-to-end gate test.
 //
-// Bot behaviour is scripted with queueBotReply/queueNoReply, consumed FIFO
-// by the next SubmitText or SubmitClick call.
+// Bot behaviour is scripted with queueBotReply/queueBotEdit/queueNoReply,
+// consumed FIFO by the next SubmitText or SubmitClick call.
 type fakeChat struct {
 	mu sync.Mutex
 
@@ -24,13 +24,19 @@ type fakeChat struct {
 	entries   []platform.JournalEntry
 	messages  []platform.Message // outbound bot messages, WaitForMessage's ordinal addressing
 
+	// editVersions tracks the current Version of every bot message this
+	// fakeChat has edited in place (queueBotEdit), keyed by MessageID, so
+	// WaitForEdit can resolve a real edit the same way a live emulator would
+	// — see editBotMessageLocked and WaitForEdit.
+	editVersions map[int]int
+
 	queue []func(chatID int64)
 
 	submitTextCalls  int
 	submitClickCalls int
 }
 
-func newFakeChat() *fakeChat { return &fakeChat{} }
+func newFakeChat() *fakeChat { return &fakeChat{editVersions: make(map[int]int)} }
 
 // Journal implements observe.Journaler.
 func (f *fakeChat) Journal(int64) ([]platform.JournalEntry, error) {
@@ -64,6 +70,38 @@ func (f *fakeChat) queueBotReply(text string, actions [][]platform.Action) {
 		id := f.reserveMsgIDLocked()
 		f.appendBotMessageLocked(chatID, id, text, actions)
 	})
+}
+
+// queueBotEdit schedules the next SubmitText/SubmitClick call to edit an
+// existing bot message in place — same MessageID, Version incremented past
+// whatever this fakeChat has already recorded for it — rather than sending a
+// new message. This is the shape of a bot that re-renders the same logical
+// screen in place (greetbot's own callback handler, e.g.), used to exercise
+// the loop's semantic no-effect detection when the re-render's text and
+// actions are byte-identical to what was already shown (see
+// TestNonProgressDetectionSurvivesIdempotentReEdits).
+func (f *fakeChat) queueBotEdit(messageID int, text string, actions [][]platform.Action) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.queue = append(f.queue, func(chatID int64) {
+		f.editBotMessageLocked(chatID, messageID, text, actions)
+	})
+}
+
+// editBotMessageLocked appends an in-place edit of messageID to the journal
+// (Version = one past whatever this fakeChat last recorded for it) and
+// updates editVersions so WaitForEdit can resolve it. Unlike
+// appendBotMessageLocked, it does NOT add an entry to f.messages: an edit is
+// not a new outbound message, so it must not advance WaitForMessage's
+// ordinal cursor. Caller must hold f.mu.
+func (f *fakeChat) editBotMessageLocked(chatID int64, messageID int, text string, actions [][]platform.Action) {
+	version := f.editVersions[messageID] + 1
+	f.entries = append(f.entries, platform.JournalEntry{
+		Direction: platform.DirectionBot, Kind: platform.JournalEntryMessage,
+		MessageID: messageID, Version: version, Text: text, Actions: actions, At: time.Now(),
+	})
+	f.editVersions[messageID] = version
+	_ = chatID // no per-chat state needed beyond the shared journal in this fake
 }
 
 // appendBotMessageLocked appends a bot message to both the journal and the
@@ -129,9 +167,27 @@ func (f *fakeChat) WaitForMessage(_ int64, consumed int, _ time.Duration) (*plat
 	return &msg, true
 }
 
-// WaitForEdit implements actor.Actuator. No fakeChat-backed test edits a
-// message (only the real-emulator end-to-end test does), so this always
-// reports no edit found.
-func (f *fakeChat) WaitForEdit(int64, int, int, time.Duration) (*platform.Message, bool) {
+// WaitForEdit implements actor.Actuator. It never actually waits (see
+// WaitForMessage): if messageID's current Version (as last set by
+// queueBotEdit/editBotMessageLocked) is already past afterVersion, its
+// latest content is returned immediately; otherwise no edit is found, same
+// as the zero-Version default before this fakeChat gained edit support.
+func (f *fakeChat) WaitForEdit(chatID int64, messageID int, afterVersion int, _ time.Duration) (*platform.Message, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	version, ok := f.editVersions[messageID]
+	if !ok || version <= afterVersion {
+		return nil, false
+	}
+	for i := len(f.entries) - 1; i >= 0; i-- {
+		en := f.entries[i]
+		if en.Kind != platform.JournalEntryMessage || en.MessageID != messageID || en.Version != version {
+			continue
+		}
+		return &platform.Message{
+			Platform: "fake", ChatID: chatID, MessageID: messageID,
+			Text: en.Text, Actions: en.Actions, ReceivedAt: en.At, Version: en.Version,
+		}, true
+	}
 	return nil, false
 }

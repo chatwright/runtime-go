@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- `actor.Loop` no longer scores a content-identical re-render — a message
+  re-edited in place with byte-identical text and the same action labels,
+  only its Version bumping — as progress. Fixes
+  [#2](https://github.com/chatwright/runtime-go/issues/2): the model arena's
+  non-progress detector was fooled by exactly this shape of idempotent
+  re-edit (a model re-clicking an already-activated button), letting a
+  model re-click the same button indefinitely without ever tripping
+  `Config.NonProgressLimit`. `observe.Engine`'s `Changes` feed is unchanged
+  and stays truthful (a version bump is still a recorded Change); only the
+  loop's own PROGRESS judgement (`actor.ActionExecuted` vs
+  `actor.ActionExecutedNoEffect`) now also requires the change to be
+  semantically real — see `observedEffect`/`semanticallyEqualMessage` in
+  `actor/loop.go`.
+- `actor.Loop.RunTask` now records a `LoopEvent` — carrying `Index`, `At`,
+  `TaskID`, `ObservationSequence` and the new `LoopEvent.ProposeError` —
+  before returning when `Provider.Propose` errors, instead of the failure
+  vanishing from `Loop.Events` (and so from any assembled run bundle) with
+  only a returned Go error. Fixes
+  [#4](https://github.com/chatwright/runtime-go/issues/4). `RunTask`'s own
+  abort-via-returned-error behaviour is otherwise unchanged: a `Propose`
+  error still aborts the call, and the campaign is not itself stopped
+  (`goal.CampaignState.Abort` is not called) — only the evidence trail
+  changes. Requires `chatwright.dev/sdk` >= v0.1.1
+  ([chatwright/sdk-go#1](https://github.com/chatwright/sdk-go/pull/1)),
+  which added the additive `LoopEvent.ProposeError` wire field;
+  `run/wire.go`'s `wireLoopEvent` carries it through mechanically, like
+  every other field.
 - `actor/openai`: an OpenAI-compatible `actor.Provider` for
   `POST {BaseURL}/chat/completions` — Ollama, LM Studio, OpenRouter, vLLM and
   OpenAI itself. Ported from

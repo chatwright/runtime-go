@@ -227,6 +227,19 @@ func (l *Loop) RunTask(ctx context.Context, taskID string) (TaskResult, error) {
 		prompt := l.buildPrompt(task, obs)
 		proposal, usage, err := l.provider.Propose(ctx, prompt)
 		if err != nil {
+			// Record what this iteration DID manage to do — observe — before
+			// returning, so the failure leaves evidence in l.events (and so
+			// a run bundle assembled from it) instead of vanishing with only
+			// a returned Go error. No Proposal was ever produced, so Usage,
+			// Validation and Action all stay at their zero value; see
+			// LoopEvent.ProposeError's doc comment.
+			l.events = append(l.events, LoopEvent{
+				Index:               len(l.events),
+				At:                  l.cfg.Now(),
+				TaskID:              taskID,
+				ObservationSequence: obs.Sequence,
+				ProposeError:        err.Error(),
+			})
 			return TaskResult{}, fmt.Errorf("actor: propose: %w", err)
 		}
 
@@ -447,7 +460,7 @@ func (l *Loop) actOn(taskID string, obs *observe.Observation, p Proposal) (progr
 		if err := l.actuator.SubmitText(l.cfg.ChatID, l.cfg.User, p.Text); err != nil {
 			return false, ActionOutcome{}, ValidationOutcome{}, fmt.Errorf("actor: submit text: %w", err)
 		}
-		effect, err := l.observedEffect()
+		effect, err := l.observedEffect(obs)
 		if err != nil {
 			return false, ActionOutcome{}, ValidationOutcome{}, err
 		}
@@ -476,7 +489,7 @@ func (l *Loop) actOn(taskID string, obs *observe.Observation, p Proposal) (progr
 		if err := l.actuator.SubmitClick(l.cfg.ChatID, l.cfg.User, data, targetMessageID); err != nil {
 			return false, ActionOutcome{}, validation, fmt.Errorf("actor: submit click: %w", err)
 		}
-		effect, err := l.observedEffect()
+		effect, err := l.observedEffect(obs)
 		if err != nil {
 			return false, ActionOutcome{}, validation, err
 		}
@@ -492,23 +505,96 @@ func (l *Loop) actOn(taskID string, obs *observe.Observation, p Proposal) (progr
 }
 
 // observedEffect re-observes after acting and reports whether the bot
-// reacted: a new bot message, an edit to one of its messages, or its
-// available actions changing. It deliberately ignores a change whose Actor
-// is the user — submitting text or a click always adds the actor's own
-// message/action to the journal, which would otherwise always look like "an
-// effect" even when the bot never responded at all, defeating non-progress
-// detection. It also refreshes l.lastBotMessage, so the loop's very next
-// iteration (or the next click resolution within this same act) sees
-// up-to-date raw message state.
-func (l *Loop) observedEffect() (bool, error) {
+// reacted with a semantic effect: a new bot message, or an existing bot
+// message whose Text or available-action labels actually differ from
+// preAction (the Observation the loop acted from). It deliberately ignores
+// a change whose Actor is the user — submitting text or a click always
+// adds the actor's own message/action to the journal, which would
+// otherwise always look like "an effect" even when the bot never responded
+// at all, defeating non-progress detection.
+//
+// It deliberately does NOT stop at "some observe.Change exists for a bot
+// message", the way an earlier version of this method did. observe.Engine's
+// diff keys ChangeMessageEdited off Version alone (see observe/engine.go's
+// diff): a bot that re-edits a message in place with byte-identical text and
+// the same action labels — the arena trap behind
+// https://github.com/chatwright/runtime-go/issues/2, where a model re-clicks
+// an already-activated button and the bot's handler harmlessly re-renders
+// the same screen — still bumps Version, so it still produces a
+// ChangeMessageEdited. That Change is correct, and stays exactly as-is on
+// the Observation: observe's Changes feed is a truthful record of what
+// moved, never a judgement about whether it mattered (see observe.Change's
+// doc comment). But treating "a Change exists" as "progress" here let a
+// model click the same button ten extra times without ever tripping
+// NonProgressLimit, because every idempotent re-edit looked identical to a
+// real one. semanticallyEqualMessage is what tells the two apart: a real
+// content change is progress, a content-identical re-render is not — so
+// the two concerns (observe's truthful Changes vs. the loop's own PROGRESS
+// judgement) stay distinct instead of collapsing into "any Change means
+// progress".
+//
+// It also refreshes l.lastBotMessage, so the loop's very next iteration (or
+// the next click resolution within this same act) sees up-to-date raw
+// message state.
+func (l *Loop) observedEffect(preAction *observe.Observation) (bool, error) {
 	obs, err := l.observeAndSync()
 	if err != nil {
 		return false, err
 	}
+
+	preByID := make(map[string]observe.VisibleMessage, len(preAction.Messages))
+	for _, m := range preAction.Messages {
+		preByID[m.ID] = m
+	}
+
 	for _, ch := range obs.Changes {
-		if ch.Actor == observe.ActorBot {
+		if ch.Actor != observe.ActorBot {
+			continue
+		}
+		curMsg, found := findMessageByID(obs.Messages, ch.MessageID)
+		if !found {
+			// Defensive: a bot Change naming a message no longer present is not
+			// one this loop can dismiss as a no-op re-render.
+			return true, nil
+		}
+		prevMsg, hadPrev := preByID[ch.MessageID]
+		if !hadPrev || !semanticallyEqualMessage(prevMsg, curMsg) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// findMessageByID returns the message with the given id from messages, and
+// whether it was found.
+func findMessageByID(messages []observe.VisibleMessage, id string) (observe.VisibleMessage, bool) {
+	for _, m := range messages {
+		if m.ID == id {
+			return m, true
+		}
+	}
+	return observe.VisibleMessage{}, false
+}
+
+// semanticallyEqualMessage reports whether a and b — two observations of
+// the same logical message, at possibly different Versions — carry the
+// same user-visible content: identical text and the same action labels in
+// the same layout. It deliberately compares Actions by Label, never by ID:
+// an AvailableAction.ID encodes the owning message's version (see
+// observe/engine.go's availableActionID), so it changes on every edit by
+// design — comparing IDs would report every re-render as a change, which
+// is exactly the false "progress" signal this function exists to avoid.
+func semanticallyEqualMessage(a, b observe.VisibleMessage) bool {
+	if a.Text != b.Text {
+		return false
+	}
+	if len(a.Actions) != len(b.Actions) {
+		return false
+	}
+	for i := range a.Actions {
+		if a.Actions[i].Label != b.Actions[i].Label {
+			return false
+		}
+	}
+	return true
 }
