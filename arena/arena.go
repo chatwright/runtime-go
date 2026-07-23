@@ -18,6 +18,25 @@
 // chatwright arena CLI subcommand) persists whatever it needs (bundles,
 // the report, a machine-readable Results dump) into its own chosen
 // directory layout. See Run and WriteReport.
+//
+// # Host stability on Apple Silicon
+//
+// Rapid large-model Metal load/unload cycling has triggered macOS GPU
+// kernel panics during arena reruns on this hardware (chatwright/backstage
+// research/model-arena-2026-07-23/crash-analysis.md): two panics, both an
+// identical IOGPU/Metal driver signature ("Memory object unexpectedly not
+// found in fPendingMemorySet" @IOGPUGroupMemory.cpp:219), observed 2/2 on
+// macOS 26.5.2, Apple M5 Max 36GB unified memory, both during large-model
+// (26B/27B) blocks. A third panic then occurred at idle, forty minutes
+// after model activity had already finished cleanly — so model size alone
+// is not a reliable predictor, and the machine is not safe to treat as
+// "done" the moment inference stops. Until this is root-caused as a driver
+// bug rather than a workload trigger: run any large-model matrix on Apple
+// Silicon only attended, with RunOptions.FlightLog set to a persistent
+// path (see FlightLog) — a kernel panic erases RAM, including whatever the
+// model server itself was logging, so the flight log's fsync'd last line
+// is what tells you which phase, and which model, was running when the
+// machine went down.
 package arena
 
 import (
@@ -106,6 +125,32 @@ type RunOptions struct {
 	// repeat 1/3 · task 1/2 · steps 5/12')". Nil (the zero value) means no
 	// progress output — Run behaves exactly as before this field existed.
 	ProgressWriter io.Writer
+
+	// FlightLog, when non-nil, makes Run write one fsync'd line to it
+	// before/around every consequential phase boundary — matrix start,
+	// each model block's loader invocation and its actual outcome, warm-up
+	// start/end (with cold-start seconds), each cell's start/end (repeat
+	// index, outcome summary), block end (with a best-effort host-memory
+	// snapshot), and matrix end. Nil (the default) disables flight logging
+	// entirely — zero behavioural change, and Run never allocates or opens
+	// anything on its account. See FlightLog and, in particular, its own
+	// doc comment on why the path backing it must be persistent, never
+	// /tmp: this exists to survive a kernel panic (chatwright/runtime-go#8).
+	FlightLog *FlightLog
+}
+
+// logf writes one flight-log line when o.FlightLog is set, and does
+// nothing otherwise — every Run call site uses this instead of calling
+// o.FlightLog.Logf directly, so a nil FlightLog stays a true no-op with no
+// scattered nil checks at each call site. A write/fsync failure is
+// swallowed (best-effort diagnostics, matching Loader's own degrade-never-
+// fail contract): a flight-log problem must never abort a Run that could
+// otherwise keep producing real evidence.
+func (o RunOptions) logf(format string, args ...any) {
+	if o.FlightLog == nil {
+		return
+	}
+	_ = o.FlightLog.Logf(format, args...)
 }
 
 func (o RunOptions) clock() func() time.Time {
@@ -301,33 +346,94 @@ func Run(ctx context.Context, matrix Matrix, opts RunOptions) (Results, error) {
 		},
 	}
 
+	opts.logf("arena: phase=matrix-start scenario=%s@%s providers=%s", matrix.Scenario.ID, matrix.Scenario.Version, providerLabels(matrix.Providers))
+
 	for modelIndex, spec := range matrix.Providers {
+		opts.logf("arena: phase=loader-invoke model=%s kind=%s", spec.label(), string(spec.Kind))
 		loadResult, err := opts.loaderFor(spec.Kind).Load(ctx, spec)
 		if err != nil {
+			opts.logf("arena: phase=load model=%s ctx=%d err=%q", spec.label(), spec.ContextLength, err.Error())
 			return results, fmt.Errorf("arena: load %s: %w", spec.label(), err)
 		}
+		opts.logf("arena: phase=load model=%s ctx=%d performed=%t note=%q", spec.label(), spec.ContextLength, loadResult.Performed, loadResult.Note)
 		results.Environment.Providers = append(results.Environment.Providers, ProviderEnvironment{Spec: spec, LoadResult: loadResult})
 
-		provider, err := newProvider(spec)
-		if err != nil {
-			results.Models = append(results.Models, ModelResult{Spec: spec, ProviderErr: err})
-			continue
-		}
-
-		model := ModelResult{Spec: spec}
-		model.Warmup = runWarmup(ctx, provider, now, opts.warmupTimeout(), goalDef)
-
-		matrixPos := matrixPosition{
+		model := runProviderModelBlock(ctx, matrix, spec, opts, goalDef, now, newProvider, matrixPosition{
 			modelIndex: modelIndex + 1, modelCount: len(matrix.Providers), repeatCount: matrix.Repeats,
-		}
-		for repeat := 1; repeat <= matrix.Repeats; repeat++ {
-			matrixPos.repeat = repeat
-			model.Cells = append(model.Cells, runCell(ctx, matrix.Scenario, provider, spec, goalDef, repeat, now, opts.ProgressWriter, matrixPos))
-		}
+		})
 		results.Models = append(results.Models, model)
+
+		// Block end is its own flight-log phase before the next model's
+		// loader-invoke: the founder's own third panic hit forty minutes
+		// after a block finished cleanly, at idle — so the memory snapshot
+		// belongs right here, at the boundary, not only during activity.
+		opts.logf("arena: phase=block-end model=%s", spec.label())
+		if snap := memorySnapshot(); snap != "" {
+			opts.logf("arena: phase=memory %s", snap)
+		}
 	}
 
+	opts.logf("arena: phase=matrix-end models=%d", len(results.Models))
+
 	return results, nil
+}
+
+// runProviderModelBlock runs one matrix column's mandatory warm-up plus its
+// Matrix.Repeats timed cells, flight-logging each phase boundary as it
+// goes. Split out of Run so the surrounding loop's own load/block-end/
+// memory-snapshot flight-log lines bracket it uniformly, whether this block
+// completes normally or returns early on a ProviderFactory failure.
+func runProviderModelBlock(ctx context.Context, matrix Matrix, spec ProviderSpec, opts RunOptions, goalDef goal.Goal, now func() time.Time, newProvider func(ProviderSpec) (actor.Provider, error), pos matrixPosition) ModelResult {
+	provider, err := newProvider(spec)
+	if err != nil {
+		return ModelResult{Spec: spec, ProviderErr: err}
+	}
+
+	model := ModelResult{Spec: spec}
+
+	opts.logf("arena: phase=warmup-start model=%s", spec.label())
+	model.Warmup = runWarmup(ctx, provider, now, opts.warmupTimeout(), goalDef)
+	opts.logf("arena: phase=warmup-end model=%s cold_start_s=%.2f err=%q", spec.label(), model.Warmup.ColdStart.Seconds(), errText(model.Warmup.Err))
+
+	for repeat := 1; repeat <= matrix.Repeats; repeat++ {
+		pos.repeat = repeat
+		opts.logf("arena: phase=cell-start model=%s repeat=%d", spec.label(), repeat)
+		cell := runCell(ctx, matrix.Scenario, provider, spec, goalDef, repeat, now, opts.ProgressWriter, pos)
+		opts.logf("arena: phase=cell-end model=%s repeat=%d outcome=%q", spec.label(), repeat, cellOutcome(cell))
+		model.Cells = append(model.Cells, cell)
+	}
+
+	return model
+}
+
+// providerLabels renders specs' labels for the matrix-start flight-log
+// line, e.g. "[lmstudio/gemma-4-26b, ollama/qwen3.6]".
+func providerLabels(specs []ProviderSpec) string {
+	labels := make([]string, len(specs))
+	for i, s := range specs {
+		labels[i] = s.label()
+	}
+	return "[" + strings.Join(labels, ", ") + "]"
+}
+
+// errText returns err.Error(), or "" when err is nil — so a flight-log
+// line can always carry an err= field unconditionally rather than omitting
+// it depending on success/failure.
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// cellOutcome summarises one CellResult for its flight-log cell-end line —
+// enough to tell, from the flight log alone, roughly how a cell went
+// without needing the full bundle.
+func cellOutcome(c CellResult) string {
+	if c.Err != nil {
+		return "error: " + firstLine(c.Err.Error())
+	}
+	return fmt.Sprintf("task=%s stop=%s verified=%t", c.TaskStatus, c.StopReason, c.Verified)
 }
 
 // effectiveGoal returns scenario.Goal with its Budgets replaced by override
