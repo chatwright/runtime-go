@@ -135,6 +135,7 @@ func wireLoopEvent(e actor.LoopEvent) sdk.LoopEvent {
 		Usage:               wireUsage(e.Usage),
 		Validation:          wireValidationOutcome(e.Validation),
 		Action:              wireActionOutcome(e.Action),
+		ProposeError:        e.ProposeError,
 	}
 }
 

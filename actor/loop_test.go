@@ -270,6 +270,252 @@ func TestNonProgressDetectionStops(t *testing.T) {
 	}
 }
 
+// englishActionIn returns the "English" AvailableAction's ID from obs, or
+// fails the test — the fixture helper TestNonProgressDetectionSurvives
+// IdempotentReEdits' scripted click-provider uses to always target the
+// CURRENT observation's action, exactly as a real Provider must (an action's
+// synthetic ID changes on every edit — see observe/engine.go's
+// availableActionID — so a click test cannot hardcode one upfront).
+func englishActionIn(t *testing.T, obs observe.Observation) string {
+	t.Helper()
+	for _, m := range obs.Messages {
+		for _, a := range m.Actions {
+			if a.Label == "English" {
+				return a.ID
+			}
+		}
+	}
+	t.Fatalf("no \"English\" action in observation %+v", obs)
+	return ""
+}
+
+// TestNonProgressDetectionSurvivesIdempotentReEdits reproduces the model
+// arena's non-progress trap (github.com/chatwright/runtime-go/issues/2):
+// clicking "English" once genuinely changes the bot's message ("Choose your
+// language" -> "Howdy stranger"), but every subsequent click re-edits the
+// SAME message with byte-identical text and the same action labels — only
+// Version advances. Before the fix, every one of those idempotent re-edits
+// still produced an observe.Change (Version bumped) and so was scored as
+// ActionExecuted ("progress"), letting a model re-click the same button
+// forever without ever tripping NonProgressLimit — exactly what the arena
+// run against ollama/qwen3.6:latest did (11 clicks, 0 recorded
+// executed-no-effect, budget-steps only stop reason). This test proves the
+// fix: the first click counts as progress, and the identical re-edits reset
+// nothing, so NonProgressLimit stops the campaign after the Nth
+// content-identical re-edit.
+func TestNonProgressDetectionSurvivesIdempotentReEdits(t *testing.T) {
+	fc := newFakeChat()
+	msgID := fc.seedBotMessage("Choose your language", [][]platform.Action{
+		{{Label: "English", ID: "cb_en"}},
+	})
+
+	// One genuine content change, then three byte-identical re-edits of the
+	// same message — the loop must never see the latter three as effects.
+	fc.queueBotEdit(msgID, "Howdy stranger", [][]platform.Action{{{Label: "English", ID: "cb_en"}}})
+	fc.queueBotEdit(msgID, "Howdy stranger", [][]platform.Action{{{Label: "English", ID: "cb_en"}}})
+	fc.queueBotEdit(msgID, "Howdy stranger", [][]platform.Action{{{Label: "English", ID: "cb_en"}}})
+	fc.queueBotEdit(msgID, "Howdy stranger", [][]platform.Action{{{Label: "English", ID: "cb_en"}}})
+
+	engine := observe.NewEngine(fc, observe.ChatRef{ChatID: testChatID})
+	clock := newFakeClock()
+	g := goal.Goal{ID: "g", Tasks: []goal.Task{{ID: "t1"}}}
+	campaign := mustCampaign(t, g, clock.now)
+
+	// A Provider that always re-clicks "English" off the CURRENT
+	// observation, mirroring a model stuck re-clicking an
+	// already-activated button rather than moving on.
+	provider := actor.ProviderFunc(func(_ context.Context, p actor.Prompt) (actor.Proposal, actor.Usage, error) {
+		return actor.Proposal{
+			Kind: actor.ProposeClick, ActionID: englishActionIn(t, p.Observation),
+			ObservationSequence: p.Observation.Sequence, Rationale: "pick English",
+		}, actor.Usage{}, nil
+	})
+	lp := mustLoop(t, provider, engine, fc, campaign, g, actor.Config{ChatID: testChatID, User: testUser, Now: clock.now, NonProgressLimit: 3})
+
+	result, err := lp.RunTask(context.Background(), "t1")
+	if err != nil {
+		t.Fatalf("RunTask() error = %v", err)
+	}
+	if !result.NonProgress {
+		t.Fatal("result.NonProgress = false, want true — the identical re-edits must not be read as progress")
+	}
+	if !result.Stopped {
+		t.Fatal("result.Stopped = false, want true")
+	}
+
+	events := lp.Events()
+	if len(events) != 4 {
+		t.Fatalf("recorded %d events, want exactly 4 (1 genuine click + NonProgressLimit=3 identical re-edits): %+v", len(events), events)
+	}
+	if events[0].Action.Kind != actor.ActionExecuted {
+		t.Fatalf("event 0 (the genuine content change) action = %v, want ActionExecuted", events[0].Action.Kind)
+	}
+	for i := 1; i < 4; i++ {
+		if events[i].Action.Kind != actor.ActionExecutedNoEffect {
+			t.Fatalf("event %d (an identical re-edit) action = %v, want ActionExecutedNoEffect", i, events[i].Action.Kind)
+		}
+	}
+	if fc.submitClickCalls != 4 {
+		t.Fatalf("SubmitClick called %d times, want exactly 4", fc.submitClickCalls)
+	}
+}
+
+// TestGenuineEditsStillCountAsProgress proves the fix does not overcorrect:
+// a message edited TWICE in a row, with genuinely different text and
+// actions each time (never a byte-identical re-render), counts as progress
+// both times — so the fix only suppresses content-identical re-renders,
+// never real ones.
+func TestGenuineEditsStillCountAsProgress(t *testing.T) {
+	fc := newFakeChat()
+	msgID := fc.seedBotMessage("Choose your language", [][]platform.Action{
+		{{Label: "English", ID: "cb_en"}},
+	})
+	// Two distinct, real edits of the same message: text and the action set
+	// both genuinely change each time.
+	fc.queueBotEdit(msgID, "Howdy stranger", [][]platform.Action{{{Label: "Continue", ID: "cb_continue"}}})
+	fc.queueBotEdit(msgID, "All set!", nil)
+
+	engine := observe.NewEngine(fc, observe.ChatRef{ChatID: testChatID})
+	clock := newFakeClock()
+	g := goal.Goal{ID: "g", Tasks: []goal.Task{{ID: "t1"}}}
+	campaign := mustCampaign(t, g, clock.now)
+
+	// Always click whichever action the CURRENT observation shows, once one
+	// remains, moving to task-done: real IDs change on every edit (see
+	// observe/engine.go's availableActionID), so a fixed ScriptedProvider
+	// script cannot drive this across two edits the way it can drive a
+	// single click (see the repeated-failures budget case in
+	// TestLoopStopsOnEachBudget).
+	provider := actor.ProviderFunc(func(_ context.Context, p actor.Prompt) (actor.Proposal, actor.Usage, error) {
+		for _, m := range p.Observation.Messages {
+			for _, a := range m.Actions {
+				return actor.Proposal{
+					Kind: actor.ProposeClick, ActionID: a.ID,
+					ObservationSequence: p.Observation.Sequence, Rationale: "advance",
+				}, actor.Usage{}, nil
+			}
+		}
+		return actor.Proposal{Kind: actor.ProposeTaskDone, Rationale: "no actions left"}, actor.Usage{}, nil
+	})
+	lp := mustLoop(t, provider, engine, fc, campaign, g, actor.Config{ChatID: testChatID, User: testUser, Now: clock.now, NonProgressLimit: 2})
+
+	result, err := lp.RunTask(context.Background(), "t1")
+	if err != nil {
+		t.Fatalf("RunTask() error = %v", err)
+	}
+	if result.NonProgress {
+		t.Fatal("result.NonProgress = true, want false — two genuine content changes must both count as progress")
+	}
+	if result.Status != goal.TaskCompleted {
+		t.Fatalf("task status = %v, want completed", result.Status)
+	}
+
+	events := lp.Events()
+	if len(events) != 3 {
+		t.Fatalf("recorded %d events, want exactly 3 (2 genuine edits + task-done): %+v", len(events), events)
+	}
+	for i := 0; i < 2; i++ {
+		if events[i].Action.Kind != actor.ActionExecuted {
+			t.Fatalf("event %d action = %v, want ActionExecuted", i, events[i].Action.Kind)
+		}
+	}
+	if events[2].Action.Kind != actor.ActionTaskCompleted {
+		t.Fatalf("event 2 action = %v, want ActionTaskCompleted", events[2].Action.Kind)
+	}
+}
+
+// TestProposeErrorLeavesLoopEventEvidence reproduces
+// github.com/chatwright/runtime-go/issue #4: a Provider.Propose error used
+// to abort RunTask (a returned Go error, unchanged by this test) while
+// leaving absolutely no trace in Loop.Events — a run bundle assembled from
+// that Loop would show a campaign that just stopped, with nothing
+// explaining why. This proves the fix: the failing iteration still gets a
+// LoopEvent (index, timestamp, task, the observation it was attempting to
+// act from, and the error captured in ProposeError), recorded BEFORE
+// RunTask returns, alongside the normal event from the call before it —
+// while RunTask's own abort-via-returned-error behaviour, and the
+// campaign's own stopped state, are both otherwise unchanged.
+func TestProposeErrorLeavesLoopEventEvidence(t *testing.T) {
+	fc := newFakeChat()
+	fc.seedBotMessage("Hello", nil)
+	fc.queueBotReply("pong", nil) // consumed by the one successful call only
+
+	engine := observe.NewEngine(fc, observe.ChatRef{ChatID: testChatID})
+	clock := newFakeClock()
+	g := goal.Goal{ID: "g", Tasks: []goal.Task{{ID: "t1"}}}
+	campaign := mustCampaign(t, g, clock.now)
+
+	errPropose := errors.New("actor/fake: transport failed: context deadline exceeded")
+	calls := 0
+	provider := actor.ProviderFunc(func(context.Context, actor.Prompt) (actor.Proposal, actor.Usage, error) {
+		calls++
+		if calls == 2 {
+			return actor.Proposal{}, actor.Usage{}, errPropose
+		}
+		return actor.Proposal{Kind: actor.ProposeSendText, Text: "ping"}, actor.Usage{Model: "scripted"}, nil
+	})
+	lp := mustLoop(t, provider, engine, fc, campaign, g, actor.Config{ChatID: testChatID, User: testUser, Now: clock.now})
+
+	result, err := lp.RunTask(context.Background(), "t1")
+	if err == nil {
+		t.Fatal("RunTask() error = nil, want the Propose error to abort the task — existing behaviour, unchanged")
+	}
+	if !errors.Is(err, errPropose) {
+		t.Fatalf("RunTask() error = %v, want it to wrap the Provider's error", err)
+	}
+	if result != (actor.TaskResult{}) {
+		t.Fatalf("RunTask() result = %+v, want the zero TaskResult on error (unchanged)", result)
+	}
+	if campaign.Stopped() {
+		t.Fatal("campaign.Stopped() = true, want false — a Propose error aborts this RunTask call via its returned error; it does not itself stop the campaign (unchanged behaviour)")
+	}
+
+	events := lp.Events()
+	if len(events) != 2 {
+		t.Fatalf("recorded %d events, want exactly 2 (1 normal + 1 propose-error): %+v", len(events), events)
+	}
+
+	first := events[0]
+	if first.Index != 0 {
+		t.Fatalf("event 0 Index = %d, want 0", first.Index)
+	}
+	if first.ProposeError != "" {
+		t.Fatalf("event 0 ProposeError = %q, want empty", first.ProposeError)
+	}
+	if first.Proposal.Kind != actor.ProposeSendText {
+		t.Fatalf("event 0 Proposal.Kind = %v, want ProposeSendText", first.Proposal.Kind)
+	}
+
+	second := events[1]
+	if second.Index != 1 {
+		t.Fatalf("event 1 Index = %d, want 1", second.Index)
+	}
+	if second.TaskID != "t1" {
+		t.Fatalf("event 1 TaskID = %q, want \"t1\"", second.TaskID)
+	}
+	if second.At.IsZero() {
+		t.Fatal("event 1 At is zero, want the loop's clock reading")
+	}
+	if second.ObservationSequence == 0 {
+		t.Fatal("event 1 ObservationSequence = 0, want the observation this iteration observed before proposing")
+	}
+	if second.ProposeError != errPropose.Error() {
+		t.Fatalf("event 1 ProposeError = %q, want %q", second.ProposeError, errPropose.Error())
+	}
+	if second.Proposal != (actor.Proposal{}) {
+		t.Fatalf("event 1 Proposal = %+v, want the zero value — no proposal was ever produced", second.Proposal)
+	}
+	if second.Usage != (actor.Usage{}) {
+		t.Fatalf("event 1 Usage = %+v, want the zero value", second.Usage)
+	}
+	if second.Validation != (actor.ValidationOutcome{}) {
+		t.Fatalf("event 1 Validation = %+v, want the zero value", second.Validation)
+	}
+	if second.Action != (actor.ActionOutcome{}) {
+		t.Fatalf("event 1 Action = %+v, want the zero value — no action was ever taken", second.Action)
+	}
+}
+
 // TestNewLoopRejectsNilClock proves Loop mirrors goal.CampaignState's own
 // "no bare time.Now" determinism discipline.
 func TestNewLoopRejectsNilClock(t *testing.T) {
