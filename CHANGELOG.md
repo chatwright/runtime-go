@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- `arena`: added `arena.FlightLog` — an append-only, fsync-per-line log
+  (`OpenFlightLog(path)`, `Logf`, `Close`; stdlib-only, `os.File` +
+  `File.Sync()`) and `RunOptions.FlightLog` (nil = disabled, zero
+  behavioural change) so `arena.Run` writes one durable line before/around
+  every phase boundary — matrix start, each model block's loader
+  invocation and its actual outcome, the model/context-length load line,
+  warm-up start/end (cold-start seconds), each cell's start/end (repeat
+  index, outcome summary), block end, and matrix end — plus a best-effort
+  host-memory snapshot at each block-end boundary (`sysctl -n
+  vm.swapusage` + `memory_pressure -Q` on darwin, guarded by
+  `exec.LookPath`; degrades to omitting the line everywhere else or when
+  either tool is missing, never fails the run). Fixes
+  [#8](https://github.com/chatwright/runtime-go/issues/8), filed after two
+  (then three) macOS kernel panics during arena reruns
+  ([chatwright/backstage
+  research/model-arena-2026-07-23/crash-analysis.md](https://github.com/chatwright/backstage/tree/main/research/model-arena-2026-07-23)) —
+  a kernel panic erases every RAM-resident buffer, including the model
+  server's own logs, so the flight log's fsync'd-before-return last line
+  is what survives to name the phase (and model) that was running when the
+  machine went down. `OpenFlightLog`'s own doc comment says loudly to give
+  it a persistent path, never `/tmp`. The package doc now also carries a
+  host-stability note: rapid large-model Metal load/unload cycling has
+  triggered this GPU kernel panic on macOS (observed 2/2 on 26.5.2, Apple
+  M5 Max 36GB) and a third panic occurred later at idle, after model
+  activity had already finished cleanly — large-model matrices on Apple
+  Silicon should stay attended and flight-logged until this is root-caused.
 - `actor.Loop` no longer scores a content-identical re-render — a message
   re-edited in place with byte-identical text and the same action labels,
   only its Version bumping — as progress. Fixes
