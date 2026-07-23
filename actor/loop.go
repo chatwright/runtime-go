@@ -67,6 +67,26 @@ type Config struct {
 	// whole run is not affordable; Loop.Events (and campaign.Report) are
 	// unaffected either way, since neither depends on retention.
 	DisableObservationRetention bool
+
+	// DisableOvershootProbe turns off the Loop's overshoot probe (see
+	// RunTask's evidence-defined-completion handling): the one extra
+	// Provider.Propose call RunTask otherwise issues, records and never
+	// executes the moment a task's goal.Task.Criteria are found to hold,
+	// solely to measure whether the actor would have kept acting —
+	// spec/ideas/evidence-defined-completion.md's "stops-when-done rate".
+	// The probe is ON by default (the zero value is false), since the
+	// idea's own MVP proof requires it; set this true to skip the extra
+	// call's cost when that measurement is not wanted.
+	DisableOvershootProbe bool
+
+	// OnProgress, when non-nil, is called with a ProgressSnapshot once per
+	// loop iteration and once at each task-start/task-end boundary — pure,
+	// derived, in-process reporting (spec/ideas/campaign-progress-reporting.md):
+	// nothing it receives is added to Loop.Events, a campaign.Report or any
+	// run bundle. Called synchronously, on the same goroutine RunTask runs
+	// on; a slow or blocking OnProgress delays the loop itself. Nil (the
+	// zero value) means no progress reporting.
+	OnProgress func(ProgressSnapshot)
 }
 
 // withDefaults returns cfg with zero-value tunables replaced by their
@@ -194,8 +214,24 @@ func (l *Loop) taskByID(id string) (goal.Task, bool) {
 // the campaign stops for any reason (a budget, goal-complete from another
 // path, cancellation, error), or the loop's own non-progress detection
 // fires.
+//
+// Evidence-defined completion (spec/ideas/evidence-defined-completion.md):
+// when task.Criteria is set, RunTask evaluates it after every EXECUTED
+// action (ActionExecuted — a real, observed effect; never after a no-effect
+// or invalid one) against the fresh post-action observation. The moment it
+// holds, RunTask completes the task itself
+// (goal.CampaignState.CompleteByEvidence, stop reason
+// goal.StopGoalMetByEvidence when this is the campaign's last task) and
+// returns — the actor cannot continue a task RunTask has already closed
+// out this way. Unless Config.DisableOvershootProbe, it first issues one
+// more Provider.Propose call for the same task (probeOvershoot), recorded
+// as a LoopEvent with ActionOvershootProbe and never executed, so a
+// Provider that would have kept proposing leaves that intent as evidence
+// (campaign.FindingActorOvershoot at report assembly) without ever
+// mutating platform state past the met moment.
 func (l *Loop) RunTask(ctx context.Context, taskID string) (TaskResult, error) {
-	if _, ok := l.taskByID(taskID); !ok {
+	task, ok := l.taskByID(taskID)
+	if !ok {
 		return TaskResult{}, fmt.Errorf("actor: RunTask: unknown task %q", taskID)
 	}
 
@@ -212,10 +248,19 @@ func (l *Loop) RunTask(ctx context.Context, taskID string) (TaskResult, error) {
 	}
 
 	nonProgressStreak := 0
+	iteration := 0
+	retryCounts := make(map[ActionOutcomeKind]int)
+	l.emitProgress(task, ProgressTaskStarted, iteration, nonProgressStreak, retryCounts)
+
+	endTask := func(result TaskResult) (TaskResult, error) {
+		l.emitProgress(task, ProgressTaskEnded, iteration, nonProgressStreak, retryCounts)
+		return result, nil
+	}
+
 	for {
 		if l.campaign.Stopped() {
 			status, _ := l.campaign.TaskStatus(taskID)
-			return TaskResult{TaskID: taskID, Status: status, Stopped: true}, nil
+			return endTask(TaskResult{TaskID: taskID, Status: status, Stopped: true})
 		}
 
 		obs, err := l.observeAndSync()
@@ -223,7 +268,6 @@ func (l *Loop) RunTask(ctx context.Context, taskID string) (TaskResult, error) {
 			return TaskResult{}, err
 		}
 
-		task, _ := l.taskByID(taskID)
 		prompt := l.buildPrompt(task, obs)
 		proposal, usage, err := l.provider.Propose(ctx, prompt)
 		if err != nil {
@@ -252,13 +296,15 @@ func (l *Loop) RunTask(ctx context.Context, taskID string) (TaskResult, error) {
 			Usage:               usage,
 		}
 
-		progressed, action, validation, err := l.actOn(taskID, obs, proposal)
+		progressed, action, validation, postObs, err := l.actOn(ctx, task, obs, proposal)
 		if err != nil {
 			return TaskResult{}, err
 		}
 		event.Validation = validation
 		event.Action = action
 		l.events = append(l.events, event)
+		iteration++
+		retryCounts[action.Kind]++
 
 		if err := l.campaign.RecordStep(); err != nil && !errors.Is(err, goal.ErrCampaignStopped) {
 			return TaskResult{}, fmt.Errorf("actor: record step: %w", err)
@@ -276,20 +322,132 @@ func (l *Loop) RunTask(ctx context.Context, taskID string) (TaskResult, error) {
 
 		if action.Kind == ActionTaskCompleted || action.Kind == ActionTaskGivenUp {
 			status, _ := l.campaign.TaskStatus(taskID)
-			return TaskResult{TaskID: taskID, Status: status, Stopped: l.campaign.Stopped()}, nil
+			l.emitProgress(task, ProgressIteration, iteration, nonProgressStreak, retryCounts)
+			return endTask(TaskResult{TaskID: taskID, Status: status, Stopped: l.campaign.Stopped()})
+		}
+
+		if action.Kind == ActionExecuted && task.Criteria != nil && postObs != nil {
+			met, cerr := task.Criteria(ctx, *postObs)
+			if cerr != nil {
+				return TaskResult{}, fmt.Errorf("actor: evaluate criteria: %w", cerr)
+			}
+			if met {
+				if err := l.campaign.CompleteByEvidence(taskID); err != nil && !errors.Is(err, goal.ErrCampaignStopped) {
+					return TaskResult{}, fmt.Errorf("actor: complete by evidence: %w", err)
+				}
+				if !l.cfg.DisableOvershootProbe {
+					l.probeOvershoot(ctx, task, postObs)
+				}
+				status, _ := l.campaign.TaskStatus(taskID)
+				l.emitProgress(task, ProgressIteration, iteration, nonProgressStreak, retryCounts)
+				return endTask(TaskResult{TaskID: taskID, Status: status, Stopped: l.campaign.Stopped()})
+			}
 		}
 
 		if progressed {
 			nonProgressStreak = 0
 		} else {
 			nonProgressStreak++
-			if nonProgressStreak >= l.cfg.NonProgressLimit {
-				_ = l.campaign.Abort() // already-stopped race is fine to ignore: Abort is a no-op then.
-				status, _ := l.campaign.TaskStatus(taskID)
-				return TaskResult{TaskID: taskID, Status: status, Stopped: true, NonProgress: true}, nil
-			}
+		}
+		l.emitProgress(task, ProgressIteration, iteration, nonProgressStreak, retryCounts)
+		if !progressed && nonProgressStreak >= l.cfg.NonProgressLimit {
+			_ = l.campaign.Abort() // already-stopped race is fine to ignore: Abort is a no-op then.
+			status, _ := l.campaign.TaskStatus(taskID)
+			return endTask(TaskResult{TaskID: taskID, Status: status, Stopped: true, NonProgress: true})
 		}
 	}
+}
+
+// probeOvershoot requests exactly one more Provider.Propose call for task
+// after its Criteria were found to hold, records it as a LoopEvent with
+// ActionOvershootProbe (or a normal ProposeError-carrying event if the
+// probe call itself fails) and never acts on it — see RunTask's own doc
+// comment and spec/ideas/evidence-defined-completion.md's "overshoot
+// probe". A probe failure is swallowed as evidence, never returned: the
+// task has already completed successfully, and a probe is best-effort
+// measurement, never a condition of that success.
+func (l *Loop) probeOvershoot(ctx context.Context, task goal.Task, obs *observe.Observation) {
+	prompt := l.buildPrompt(task, obs)
+	proposal, usage, err := l.provider.Propose(ctx, prompt)
+	event := LoopEvent{
+		Index:               len(l.events),
+		At:                  l.cfg.Now(),
+		TaskID:              task.ID,
+		ObservationSequence: obs.Sequence,
+		Usage:               usage,
+	}
+	if err != nil {
+		event.ProposeError = err.Error()
+	} else {
+		event.Proposal = proposal
+		event.Action = ActionOutcome{
+			Kind:   ActionOvershootProbe,
+			Detail: "requested after evidence-defined completion; recorded, never executed",
+		}
+	}
+	l.events = append(l.events, event)
+}
+
+// emitProgress builds and delivers a ProgressSnapshot for task, when
+// Config.OnProgress is set — a no-op otherwise. See ProgressSnapshot and
+// spec/ideas/campaign-progress-reporting.md.
+func (l *Loop) emitProgress(task goal.Task, phase ProgressPhase, iteration, nonProgressStreak int, retryCounts map[ActionOutcomeKind]int) {
+	if l.cfg.OnProgress == nil {
+		return
+	}
+
+	snapshot := l.campaign.Snapshot()
+	taskIndex, taskCount := 0, len(l.goalDef.Tasks)
+	tasksCompleted := 0
+	for i, t := range l.goalDef.Tasks {
+		if t.ID == task.ID {
+			taskIndex = i + 1
+		}
+		if snapshot.Statuses[t.ID] == goal.TaskCompleted {
+			tasksCompleted++
+		}
+	}
+
+	budgets := l.goalDef.Budgets
+	burn := BudgetBurn{
+		Steps:            burnFraction(float64(snapshot.Steps), float64(budgets.MaxSteps)),
+		Duration:         burnFraction(float64(snapshot.Elapsed), float64(budgets.MaxDuration)),
+		RepeatedFailures: burnFraction(float64(snapshot.Failures[task.ID]), float64(budgets.MaxRepeatedFailures)),
+	}
+	if budgets.MaxCost != nil {
+		burn.Cost = burnFraction(snapshot.Cost, *budgets.MaxCost)
+	}
+
+	retryCountsCopy := make(map[ActionOutcomeKind]int, len(retryCounts))
+	for k, v := range retryCounts {
+		retryCountsCopy[k] = v
+	}
+
+	l.cfg.OnProgress(ProgressSnapshot{
+		Phase:             phase,
+		GoalID:            l.goalDef.ID,
+		TaskID:            task.ID,
+		TaskIndex:         taskIndex,
+		TaskCount:         taskCount,
+		TasksCompleted:    tasksCompleted,
+		Iteration:         iteration,
+		Budgets:           budgets,
+		Burn:              burn,
+		NonProgressStreak: nonProgressStreak,
+		RetryCounts:       retryCountsCopy,
+		Stopped:           snapshot.Stopped,
+		StopReason:        snapshot.StopReason,
+	})
+}
+
+// burnFraction returns consumed/max, or 0 when max is <= 0 (goal.Budgets'
+// own "zero means unlimited" convention — an unbudgeted dimension is never
+// "burned").
+func burnFraction(consumed, max float64) float64 {
+	if max <= 0 {
+		return 0
+	}
+	return consumed / max
 }
 
 // RunCampaign repeatedly runs RunTask for every eligible task (in goalDef's
@@ -430,77 +588,115 @@ func (l *Loop) resolveClickTarget(label string) (row, col int, found bool) {
 	return 0, 0, false
 }
 
-// actOn validates (for ProposeClick) and, if valid, acts on proposal. It
-// returns whether the iteration progressed (acted with an observable
-// effect, or concluded the task) — the signal Loop.RunTask's non-progress
-// detection uses — plus the recorded ActionOutcome and ValidationOutcome.
-// The returned error is reserved for genuinely unexpected failures (an
-// Actuator I/O error, an internal CampaignState guard violation); an
-// invalid or unresolvable proposal is reported through ActionOutcome, never
-// as an error, per the plan's "invalid proposals are recorded and
-// re-prompted, never mutated".
-func (l *Loop) actOn(taskID string, obs *observe.Observation, p Proposal) (progressed bool, action ActionOutcome, validation ValidationOutcome, err error) {
+// actOn validates (for ProposeClick, ProposeSendText's content rules, and
+// ProposeTaskDone's evidence-defined criteria) and, if valid, acts on
+// proposal. It returns whether the iteration progressed (acted with an
+// observable effect, or concluded the task) — the signal Loop.RunTask's
+// non-progress detection uses — plus the recorded ActionOutcome and
+// ValidationOutcome, and, when a new observation was actually produced
+// (ProposeSendText/ProposeClick that reached the platform), the post-action
+// observation RunTask's own evidence-defined-completion check evaluates
+// task.Criteria against. The returned error is reserved for genuinely
+// unexpected failures (an Actuator I/O error, an internal CampaignState
+// guard violation, a Criteria/content-rule Predicate error); an invalid or
+// unresolvable proposal is reported through ActionOutcome, never as an
+// error, per the plan's "invalid proposals are recorded and re-prompted,
+// never mutated".
+func (l *Loop) actOn(ctx context.Context, task goal.Task, obs *observe.Observation, p Proposal) (progressed bool, action ActionOutcome, validation ValidationOutcome, postObs *observe.Observation, err error) {
+	taskID := task.ID
 	switch p.Kind {
 	case ProposeTaskDone:
-		if err := l.campaign.Complete(taskID); err != nil {
-			return false, ActionOutcome{Kind: ActionResolutionFailed, Detail: err.Error()}, ValidationOutcome{}, nil
+		// Evidence-defined completion (spec/ideas/evidence-defined-completion.md):
+		// when the task declares Criteria, the actor's own task-done claim
+		// is checked against them before being trusted. A premature claim
+		// (criteria not yet met) is recorded exactly like any other invalid
+		// proposal — never accepted, never silently dropped — so the task
+		// continues and the existing ai-navigation-failure classification
+		// (campaign.Assemble's navigationFailureEvidence) applies unchanged
+		// if the task later ends up Failed/Blocked. A nil Criteria leaves
+		// this proposal kind's pre-existing, unconditional-accept behaviour
+		// untouched.
+		if task.Criteria != nil {
+			met, cerr := task.Criteria(ctx, *obs)
+			if cerr != nil {
+				return false, ActionOutcome{}, ValidationOutcome{}, nil, fmt.Errorf("actor: evaluate criteria: %w", cerr)
+			}
+			if !met {
+				return false, ActionOutcome{Kind: ActionSkippedInvalid, Detail: "task-done proposed before evidence-defined criteria are met"}, ValidationOutcome{}, nil, nil
+			}
 		}
-		return true, ActionOutcome{Kind: ActionTaskCompleted}, ValidationOutcome{}, nil
+		if err := l.campaign.Complete(taskID); err != nil {
+			return false, ActionOutcome{Kind: ActionResolutionFailed, Detail: err.Error()}, ValidationOutcome{}, nil, nil
+		}
+		return true, ActionOutcome{Kind: ActionTaskCompleted}, ValidationOutcome{}, nil, nil
 
 	case ProposeGiveUp:
 		if err := l.campaign.Fail(taskID); err != nil {
-			return false, ActionOutcome{Kind: ActionResolutionFailed, Detail: err.Error()}, ValidationOutcome{}, nil
+			return false, ActionOutcome{Kind: ActionResolutionFailed, Detail: err.Error()}, ValidationOutcome{}, nil, nil
 		}
-		return true, ActionOutcome{Kind: ActionTaskGivenUp}, ValidationOutcome{}, nil
+		return true, ActionOutcome{Kind: ActionTaskGivenUp}, ValidationOutcome{}, nil, nil
 
 	case ProposeSendText:
 		if strings.TrimSpace(p.Text) == "" {
-			return false, ActionOutcome{Kind: ActionSkippedInvalid, Detail: "empty text proposal"}, ValidationOutcome{}, nil
+			return false, ActionOutcome{Kind: ActionSkippedInvalid, Detail: "empty text proposal"}, ValidationOutcome{}, nil, nil
+		}
+		// Proposal content constraints (spec/ideas/proposal-content-constraints.md):
+		// a violating text proposal is blocked before it ever reaches the
+		// bot — recorded, never submitted, and re-prompted exactly like any
+		// other invalid proposal.
+		if rules := goal.EffectiveContentRules(l.goalDef, task); !rules.Empty() {
+			ok, reason, cerr := rules.Check(ctx, p.Text)
+			if cerr != nil {
+				return false, ActionOutcome{}, ValidationOutcome{}, nil, fmt.Errorf("actor: check content rules: %w", cerr)
+			}
+			if !ok {
+				return false, ActionOutcome{Kind: ActionBlockedConstraintViolation, Detail: reason}, ValidationOutcome{}, nil, nil
+			}
 		}
 		if err := l.actuator.SubmitText(l.cfg.ChatID, l.cfg.User, p.Text); err != nil {
-			return false, ActionOutcome{}, ValidationOutcome{}, fmt.Errorf("actor: submit text: %w", err)
+			return false, ActionOutcome{}, ValidationOutcome{}, nil, fmt.Errorf("actor: submit text: %w", err)
 		}
-		effect, err := l.observedEffect(obs)
+		effect, freshObs, err := l.observedEffect(obs)
 		if err != nil {
-			return false, ActionOutcome{}, ValidationOutcome{}, err
+			return false, ActionOutcome{}, ValidationOutcome{}, nil, err
 		}
 		if !effect {
-			return false, ActionOutcome{Kind: ActionExecutedNoEffect}, ValidationOutcome{}, nil
+			return false, ActionOutcome{Kind: ActionExecutedNoEffect}, ValidationOutcome{}, freshObs, nil
 		}
-		return true, ActionOutcome{Kind: ActionExecuted}, ValidationOutcome{}, nil
+		return true, ActionOutcome{Kind: ActionExecuted}, ValidationOutcome{}, freshObs, nil
 
 	case ProposeClick:
 		result, verr := l.engine.Validate(observe.ActionProposal{ObservationSequence: p.ObservationSequence, ActionID: p.ActionID})
 		if verr != nil {
-			return false, ActionOutcome{}, ValidationOutcome{}, fmt.Errorf("actor: validate: %w", verr)
+			return false, ActionOutcome{}, ValidationOutcome{}, nil, fmt.Errorf("actor: validate: %w", verr)
 		}
 		validation = ValidationOutcome{Checked: true, Verdict: result.Verdict, Reason: result.Reason}
 		if result.Verdict != observe.VerdictFresh {
-			return false, ActionOutcome{Kind: ActionSkippedInvalid, Detail: result.Reason}, validation, nil
+			return false, ActionOutcome{Kind: ActionSkippedInvalid, Detail: result.Reason}, validation, nil, nil
 		}
 
 		row, col, found := l.resolveClickTarget(result.Current.Label)
 		if !found {
 			detail := fmt.Sprintf("no action labelled %q found on the current message", result.Current.Label)
-			return false, ActionOutcome{Kind: ActionResolutionFailed, Detail: detail}, validation, nil
+			return false, ActionOutcome{Kind: ActionResolutionFailed, Detail: detail}, validation, nil, nil
 		}
 		targetMessageID := l.lastBotMessage.MessageID
 		data := l.lastBotMessage.Actions[row][col].ID
 		if err := l.actuator.SubmitClick(l.cfg.ChatID, l.cfg.User, data, targetMessageID); err != nil {
-			return false, ActionOutcome{}, validation, fmt.Errorf("actor: submit click: %w", err)
+			return false, ActionOutcome{}, validation, nil, fmt.Errorf("actor: submit click: %w", err)
 		}
-		effect, err := l.observedEffect(obs)
+		effect, freshObs, err := l.observedEffect(obs)
 		if err != nil {
-			return false, ActionOutcome{}, validation, err
+			return false, ActionOutcome{}, validation, nil, err
 		}
 		if !effect {
-			return false, ActionOutcome{Kind: ActionExecutedNoEffect}, validation, nil
+			return false, ActionOutcome{Kind: ActionExecutedNoEffect}, validation, freshObs, nil
 		}
-		return true, ActionOutcome{Kind: ActionExecuted}, validation, nil
+		return true, ActionOutcome{Kind: ActionExecuted}, validation, freshObs, nil
 
 	default:
 		detail := fmt.Sprintf("unknown proposal kind %v", p.Kind)
-		return false, ActionOutcome{Kind: ActionSkippedInvalid, Detail: detail}, ValidationOutcome{}, nil
+		return false, ActionOutcome{Kind: ActionSkippedInvalid, Detail: detail}, ValidationOutcome{}, nil, nil
 	}
 }
 
@@ -536,10 +732,16 @@ func (l *Loop) actOn(taskID string, obs *observe.Observation, p Proposal) (progr
 // It also refreshes l.lastBotMessage, so the loop's very next iteration (or
 // the next click resolution within this same act) sees up-to-date raw
 // message state.
-func (l *Loop) observedEffect(preAction *observe.Observation) (bool, error) {
+//
+// It returns the freshly observed Observation alongside the effect
+// verdict — the same one RunTask's evidence-defined-completion check
+// evaluates goal.Task.Criteria against, so criteria are judged from
+// exactly the state this method already re-observed, never a redundant
+// extra Observe call.
+func (l *Loop) observedEffect(preAction *observe.Observation) (bool, *observe.Observation, error) {
 	obs, err := l.observeAndSync()
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 
 	preByID := make(map[string]observe.VisibleMessage, len(preAction.Messages))
@@ -555,14 +757,14 @@ func (l *Loop) observedEffect(preAction *observe.Observation) (bool, error) {
 		if !found {
 			// Defensive: a bot Change naming a message no longer present is not
 			// one this loop can dismiss as a no-op re-render.
-			return true, nil
+			return true, obs, nil
 		}
 		prevMsg, hadPrev := preByID[ch.MessageID]
 		if !hadPrev || !semanticallyEqualMessage(prevMsg, curMsg) {
-			return true, nil
+			return true, obs, nil
 		}
 	}
-	return false, nil
+	return false, obs, nil
 }
 
 // findMessageByID returns the message with the given id from messages, and

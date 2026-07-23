@@ -94,6 +94,79 @@ func TestTaskStatusTransitionsAreGuarded(t *testing.T) {
 	}
 }
 
+// TestCompleteByEvidenceUsesGoalMetByEvidenceStopReason proves
+// CompleteByEvidence behaves exactly like Complete (same guards, same
+// TaskCompleted target) but, when the completed task is the one that
+// leaves every task terminal, stops the campaign with
+// StopGoalMetByEvidence instead of StopGoalComplete — the loop's
+// evidence-defined-completion signal, distinct from the actor's own
+// task-done claim (see actor.Loop's evidence-defined completion and
+// TestGoalCompleteStopReasonIsUnaffectedByEvidenceMethod below).
+func TestCompleteByEvidenceUsesGoalMetByEvidenceStopReason(t *testing.T) {
+	clock := newFakeClock()
+	g := Goal{ID: "g", Tasks: []Task{{ID: "only"}}}
+	campaign := mustCampaign(t, g, clock.now)
+
+	if err := campaign.Activate("only"); err != nil {
+		t.Fatalf("Activate() error = %v", err)
+	}
+	if err := campaign.CompleteByEvidence("only"); err != nil {
+		t.Fatalf("CompleteByEvidence() error = %v", err)
+	}
+
+	status, err := campaign.TaskStatus("only")
+	if err != nil || status != TaskCompleted {
+		t.Fatalf("TaskStatus() = %v, %v, want TaskCompleted, nil", status, err)
+	}
+	if !campaign.Stopped() {
+		t.Fatal("campaign did not stop once its only task completed")
+	}
+	if reason, ok := campaign.StopReason(); !ok || reason != StopGoalMetByEvidence {
+		t.Fatalf("StopReason() = %v, %v, want StopGoalMetByEvidence, true", reason, ok)
+	}
+}
+
+// TestGoalCompleteStopReasonIsUnaffectedByEvidenceMethod proves the
+// pre-existing Complete path is entirely unchanged: completing the last
+// task via the actor's own claim still stops the campaign with the
+// pre-existing StopGoalComplete, never StopGoalMetByEvidence.
+func TestGoalCompleteStopReasonIsUnaffectedByEvidenceMethod(t *testing.T) {
+	clock := newFakeClock()
+	g := Goal{ID: "g", Tasks: []Task{{ID: "only"}}}
+	campaign := mustCampaign(t, g, clock.now)
+
+	if err := campaign.Activate("only"); err != nil {
+		t.Fatalf("Activate() error = %v", err)
+	}
+	if err := campaign.Complete("only"); err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	if reason, ok := campaign.StopReason(); !ok || reason != StopGoalComplete {
+		t.Fatalf("StopReason() = %v, %v, want StopGoalComplete, true", reason, ok)
+	}
+}
+
+// TestCompleteByEvidenceDoesNotStopCampaignForNonFinalTask proves
+// CompleteByEvidence on a task that is NOT the last one to finish leaves
+// the campaign running — the StopGoalMetByEvidence reason is only ever
+// used when this completion is what exhausts the campaign's remaining
+// work, exactly mirroring Complete's own behaviour.
+func TestCompleteByEvidenceDoesNotStopCampaignForNonFinalTask(t *testing.T) {
+	clock := newFakeClock()
+	g := Goal{ID: "g", Tasks: []Task{{ID: "first"}, {ID: "second"}}}
+	campaign := mustCampaign(t, g, clock.now)
+
+	if err := campaign.Activate("first"); err != nil {
+		t.Fatalf("Activate() error = %v", err)
+	}
+	if err := campaign.CompleteByEvidence("first"); err != nil {
+		t.Fatalf("CompleteByEvidence() error = %v", err)
+	}
+	if campaign.Stopped() {
+		t.Fatal("campaign stopped after only one of two tasks completed")
+	}
+}
+
 func TestBudgetsProduceDeterministicStopReasons(t *testing.T) {
 	tests := map[string]struct {
 		drive func(t *testing.T, clock *fakeClock, campaign *CampaignState)

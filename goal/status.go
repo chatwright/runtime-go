@@ -55,4 +55,16 @@ const (
 	// StopError means CampaignState.Abort was called after an unrecoverable
 	// runtime failure.
 	StopError StopReason = "error"
+	// StopGoalMetByEvidence means every task reached a terminal status, and
+	// the transition that made the LAST one terminal was a
+	// CampaignState.CompleteByEvidence call — the loop's own
+	// machine-checkable criteria evaluation, not the actor's own task-done
+	// claim, is what actually closed the campaign out. It is otherwise
+	// exactly like StopGoalComplete (checkGoalComplete's own "every task is
+	// terminal" condition): the distinct reason exists so a report can
+	// name evidence, not the actor's own wrap-up, as what ended the run —
+	// see CampaignState.CompleteByEvidence and
+	// spec/ideas/evidence-defined-completion.md in the chatwright/chatwright
+	// standard repository.
+	StopGoalMetByEvidence StopReason = "goal-met-by-evidence"
 )

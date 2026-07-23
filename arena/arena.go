@@ -23,6 +23,7 @@ package arena
 import (
 	"context"
 	"fmt"
+	"io"
 	"runtime"
 	"strings"
 	"time"
@@ -97,6 +98,14 @@ type RunOptions struct {
 	// memory". Never auto-detected: left blank unless the caller supplies
 	// it.
 	Hardware string
+
+	// ProgressWriter, when non-nil, receives one formatted stage line
+	// (FormatProgressLine) per run.ProgressSnapshot emitted while running
+	// each cell — spec/ideas/campaign-progress-reporting.md's "the arena
+	// harness (per-cell progress and matrix position, e.g. 'model 2/4 ·
+	// repeat 1/3 · task 1/2 · steps 5/12')". Nil (the zero value) means no
+	// progress output — Run behaves exactly as before this field existed.
+	ProgressWriter io.Writer
 }
 
 func (o RunOptions) clock() func() time.Time {
@@ -292,7 +301,7 @@ func Run(ctx context.Context, matrix Matrix, opts RunOptions) (Results, error) {
 		},
 	}
 
-	for _, spec := range matrix.Providers {
+	for modelIndex, spec := range matrix.Providers {
 		loadResult, err := opts.loaderFor(spec.Kind).Load(ctx, spec)
 		if err != nil {
 			return results, fmt.Errorf("arena: load %s: %w", spec.label(), err)
@@ -308,8 +317,12 @@ func Run(ctx context.Context, matrix Matrix, opts RunOptions) (Results, error) {
 		model := ModelResult{Spec: spec}
 		model.Warmup = runWarmup(ctx, provider, now, opts.warmupTimeout(), goalDef)
 
+		matrixPos := matrixPosition{
+			modelIndex: modelIndex + 1, modelCount: len(matrix.Providers), repeatCount: matrix.Repeats,
+		}
 		for repeat := 1; repeat <= matrix.Repeats; repeat++ {
-			model.Cells = append(model.Cells, runCell(ctx, matrix.Scenario, provider, spec, goalDef, repeat, now))
+			matrixPos.repeat = repeat
+			model.Cells = append(model.Cells, runCell(ctx, matrix.Scenario, provider, spec, goalDef, repeat, now, opts.ProgressWriter, matrixPos))
 		}
 		results.Models = append(results.Models, model)
 	}
@@ -358,13 +371,24 @@ func runWarmup(ctx context.Context, provider actor.Provider, now func() time.Tim
 	return wr
 }
 
+// matrixPosition names one cell's coordinates within Run's matrix — the
+// arena-level context FormatProgressLine prepends to a run.ProgressSnapshot
+// (spec/ideas/campaign-progress-reporting.md's "model 2/4 · repeat 1/3 ·
+// task 1/2 · steps 5/12").
+type matrixPosition struct {
+	modelIndex, modelCount int
+	repeat, repeatCount    int
+}
+
 // runCell runs one timed campaign — one Matrix repeat — against a fresh
 // Scenario.Setup session, assembling a full sdk.Bundle exactly the way the
 // scratchpad harness's cmd/run-cell/main.go runCell did (the same
 // run.NewAIGoalPart / run.Run / run.AssembleBundleRun path every other
 // chatwright runtime bundle writer uses), except it never writes the
-// bundle to disk — see the package doc comment.
-func runCell(ctx context.Context, scenario Scenario, provider actor.Provider, spec ProviderSpec, g goal.Goal, repeat int, now func() time.Time) CellResult {
+// bundle to disk — see the package doc comment. When progressWriter is
+// non-nil, one formatted stage line (FormatProgressLine) is written per
+// run.ProgressSnapshot this cell's run.Run emits.
+func runCell(ctx context.Context, scenario Scenario, provider actor.Provider, spec ProviderSpec, g goal.Goal, repeat int, now func() time.Time, progressWriter io.Writer, pos matrixPosition) CellResult {
 	session, err := scenario.Setup()
 	if err != nil {
 		return CellResult{Repeat: repeat, Err: fmt.Errorf("arena: scenario setup: %w", err)}
@@ -383,6 +407,11 @@ func runCell(ctx context.Context, scenario Scenario, provider actor.Provider, sp
 		ID:          runID,
 		Environment: run.Environment{Emulator: session.Emulator, ChatIDs: []int64{session.ChatID}, Now: now},
 		Parts:       []run.Part{part},
+	}
+	if progressWriter != nil {
+		r.OnProgress = func(snap run.ProgressSnapshot) {
+			_, _ = io.WriteString(progressWriter, formatProgressLine(spec, pos, snap)+"\n")
+		}
 	}
 
 	start := now()

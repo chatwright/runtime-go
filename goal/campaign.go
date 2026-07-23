@@ -125,25 +125,52 @@ func (c *CampaignState) Activate(id string) error {
 	return nil
 }
 
-// Complete transitions an Active task to Completed.
-func (c *CampaignState) Complete(id string) error { return c.terminalize(id, TaskCompleted) }
+// Complete transitions an Active task to Completed — the actor's own
+// task-done claim, or any other caller-driven completion. If this
+// transition is what leaves every task terminal, the campaign stops with
+// StopGoalComplete. See CompleteByEvidence for the loop's own
+// machine-checkable-criteria completion path.
+func (c *CampaignState) Complete(id string) error {
+	return c.terminalize(id, TaskCompleted, StopGoalComplete)
+}
+
+// CompleteByEvidence transitions an Active task to Completed because the
+// loop's own machine-checkable criteria evaluation found the task's
+// success condition already holds (evidence-defined completion) — never
+// because the actor itself proposed task-done (use Complete for that). It
+// is otherwise identical to Complete: same guards, same TaskCompleted
+// target. The only difference is which StopReason a resulting
+// checkGoalComplete uses — StopGoalMetByEvidence instead of
+// StopGoalComplete — so a report can tell "evidence closed the campaign
+// out" from "the actor's own wrap-up did", per
+// spec/ideas/evidence-defined-completion.md in the chatwright/chatwright
+// standard repository.
+func (c *CampaignState) CompleteByEvidence(id string) error {
+	return c.terminalize(id, TaskCompleted, StopGoalMetByEvidence)
+}
 
 // Fail transitions an Active task to Failed.
-func (c *CampaignState) Fail(id string) error { return c.terminalize(id, TaskFailed) }
+func (c *CampaignState) Fail(id string) error { return c.terminalize(id, TaskFailed, StopGoalComplete) }
 
 // Block transitions an Active task to Blocked.
-func (c *CampaignState) Block(id string) error { return c.terminalize(id, TaskBlocked) }
+func (c *CampaignState) Block(id string) error {
+	return c.terminalize(id, TaskBlocked, StopGoalComplete)
+}
 
 // Skip transitions an Active task to Skipped.
-func (c *CampaignState) Skip(id string) error { return c.terminalize(id, TaskSkipped) }
+func (c *CampaignState) Skip(id string) error {
+	return c.terminalize(id, TaskSkipped, StopGoalComplete)
+}
 
 // terminalize moves the task with the given id from Active to target. It
 // errors if the campaign has already stopped, the task id is unknown, or
 // the task is not currently Active (ErrTaskNotActive) — a task must be
 // activated before any terminal transition, and a terminal task cannot be
 // re-terminalized. On success it checks whether the whole campaign has run
-// out of eligible work and, if so, stops it with StopGoalComplete.
-func (c *CampaignState) terminalize(id string, target TaskStatus) error {
+// out of eligible work and, if so, stops it with completionReason (see
+// checkGoalComplete) — StopGoalComplete for every terminal transition
+// except CompleteByEvidence's own StopGoalMetByEvidence.
+func (c *CampaignState) terminalize(id string, target TaskStatus, completionReason StopReason) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.stopped {
@@ -157,22 +184,22 @@ func (c *CampaignState) terminalize(id string, target TaskStatus) error {
 		return fmt.Errorf("%w: %s is %s", ErrTaskNotActive, id, status)
 	}
 	c.statuses[id] = target
-	c.checkGoalComplete()
+	c.checkGoalComplete(completionReason)
 	return nil
 }
 
-// checkGoalComplete stops the campaign with StopGoalComplete once every
-// task has reached a terminal status — there is no more eligible work left
-// to activate. It does not judge whether the outcome was a full success;
+// checkGoalComplete stops the campaign with reason once every task has
+// reached a terminal status — there is no more eligible work left to
+// activate. It does not judge whether the outcome was a full success;
 // callers read individual TaskStatus values for that. Caller must hold
 // c.mu.
-func (c *CampaignState) checkGoalComplete() {
+func (c *CampaignState) checkGoalComplete(reason StopReason) {
 	for _, status := range c.statuses {
 		if !status.Terminal() {
 			return
 		}
 	}
-	c.stop(StopGoalComplete)
+	c.stop(reason)
 }
 
 // RecordStep counts one action/step against the campaign's step and

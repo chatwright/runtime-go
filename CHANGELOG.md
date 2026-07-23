@@ -2,6 +2,72 @@
 
 ## Unreleased
 
+- **Evidence-defined completion**
+  ([spec/ideas/evidence-defined-completion.md](https://github.com/chatwright/chatwright/blob/main/spec/ideas/evidence-defined-completion.md)):
+  `goal.Task` gained an optional, Go-only, never-serialised `Criteria`
+  field (`func(ctx, observe.Observation) (bool, error)`, `json:"-"`) —
+  a machine-checkable completion predicate alongside the prose
+  `SuccessCriteria` the actor reads. `actor.Loop.RunTask` evaluates it
+  after every `ActionExecuted` action against the fresh post-action
+  observation; the moment it holds, the task completes deterministically
+  via the new `goal.CampaignState.CompleteByEvidence` (new stop reason
+  `goal.StopGoalMetByEvidence`, used exactly when this completion is what
+  ends the whole campaign — otherwise identical to `Complete`). Unless
+  `actor.Config.DisableOvershootProbe`, one more `Provider.Propose` call is
+  then requested, recorded (new `actor.ActionOvershootProbe` outcome kind)
+  and never executed — the "overshoot probe" the idea describes, catching
+  a model that keeps proposing after the goal is already met (the exact
+  shape the first arena run observed: `ollama/qwen3.6:latest` re-clicking
+  an already-activated button 10 extra times). `campaign.Assemble` now
+  classifies every such recorded-but-never-executed event as the new
+  `campaign.FindingActorOvershoot` finding, regardless of the owning
+  task's eventual status. A premature `task-done` proposed while
+  `Criteria` is set and still false is rejected — recorded as
+  `ActionSkippedInvalid`, the task continues — reusing (unchanged) the
+  pre-existing `ai-navigation-failure` classification, never a new finding
+  kind. Requires `chatwright.dev/sdk` >= v0.2.0
+  ([chatwright/sdk-go#2](https://github.com/chatwright/sdk-go/pull/2)),
+  which widened `ActionOutcomeKind` (`overshoot-probe`,
+  `blocked-constraint-violation` — see below) and `FindingKind`
+  (`actor-overshoot`, `constraint-violation`); `goal.StopGoalMetByEvidence`
+  needs no sdk change at all, since `Report.StopReason` is already a plain
+  wire string, never a closed enum.
+- **Proposal content constraints**
+  ([spec/ideas/proposal-content-constraints.md](https://github.com/chatwright/chatwright/blob/main/spec/ideas/proposal-content-constraints.md)):
+  `goal.Task` and `goal.Goal` both gained an optional, Go-only, never-
+  serialised `ContentRules` field (new type in `goal/content_rules.go`:
+  a case-insensitive `Vocabulary` allowlist, regexp `DenyPatterns`, and a
+  custom `Predicate` seam — all deterministic, no semantic/NLP judgement).
+  `goal.EffectiveContentRules` resolves the idea's own open question
+  ("task overriding goal"): a Task's own non-empty `ContentRules` entirely
+  overrides its Goal's, never merges with it. `actor.Loop`'s validate
+  stage now checks every `ProposeSendText` proposal's text before
+  submitting it: a violation is blocked before it ever reaches the bot,
+  recorded as the new `actor.ActionBlockedConstraintViolation` outcome
+  kind, and re-prompted, counting toward `Config.NonProgressLimit` exactly
+  like any other invalid proposal. `campaign.Assemble` classifies every
+  such event as the new `campaign.FindingConstraintViolation` finding.
+  Text-only for this MVP (click proposals are not constrainable — the
+  idea's own open question, left for later).
+- **Campaign progress reporting**
+  ([spec/ideas/campaign-progress-reporting.md](https://github.com/chatwright/chatwright/blob/main/spec/ideas/campaign-progress-reporting.md)):
+  `actor.Config` gained an optional `OnProgress func(actor.ProgressSnapshot)`
+  callback (new `actor/progress.go`), called once per loop iteration and
+  once at each task-start/task-end boundary with the idea's "three honest
+  gauges" — goal progress (task j/m, tasks completed), budget burn (steps/
+  duration/cost/repeated-failures as fractions of their maxima), and
+  health (non-progress streak, retry counts by `ActionOutcomeKind`) — pure
+  derived state, nothing added to `Loop.Events`, `campaign.Report` or any
+  run bundle. `run.Run` gained the matching `OnProgress
+  func(run.ProgressSnapshot)` (new `run/progress.go`), wrapping the idea's
+  "part k/n" gauge around every Part boundary
+  (`PartProgressStarted`/`PartProgressCompleted`, for every Part kind) and
+  forwarding each ai-goal Part's own `actor.ProgressSnapshot`
+  (`PartProgressTask`). `arena.RunOptions` gained an optional
+  `ProgressWriter io.Writer`, wired through `run.Run.OnProgress` per cell
+  via a minimal internal `formatProgressLine` helper, so a future arena
+  run can print live stage lines (e.g. "model 2/4 · repeat 1/3 · part 1/1
+  [part-task] · task 1/2 · step 5 · steps-burn 42% · non-progress 0").
 - `actor.Loop` no longer scores a content-identical re-render — a message
   re-edited in place with byte-identical text and the same action labels,
   only its Version bumping — as progress. Fixes

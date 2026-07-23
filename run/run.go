@@ -198,6 +198,16 @@ type Run struct {
 	// ceiling", mirroring goal.Budgets' own "zero means unlimited"
 	// convention.
 	Ceiling RunCeiling
+
+	// OnProgress, when non-nil, is called with a ProgressSnapshot at every
+	// Part boundary (PartProgressStarted/PartProgressCompleted, for every
+	// Part kind) and, for an ai-goal Part, once per its own Loop iteration
+	// and task boundary too (PartProgressTask, forwarding that Loop's own
+	// actor.ProgressSnapshot with this Part's own position added) — see
+	// ProgressSnapshot and spec/ideas/campaign-progress-reporting.md.
+	// Called synchronously, on the same goroutine Execute runs on. Nil
+	// (the zero value) means no progress reporting.
+	OnProgress func(ProgressSnapshot)
 }
 
 // Result is everything Run.Execute produced: every Part that actually ran,
@@ -284,11 +294,14 @@ func (r Run) Execute(ctx context.Context) (Result, error) {
 	tracker := &ceilingTracker{ceiling: r.Ceiling, now: r.Environment.Now, runStart: r.Environment.Now()}
 
 	halted := PartStatus("") // once non-empty (PartAborted or PartCoverageGap), every remaining Part is skipped with that status.
-	for _, part := range r.Parts {
+	for i, part := range r.Parts {
 		if halted != "" {
 			result.Skipped = append(result.Skipped, SkippedPart{PartID: part.ID, Status: halted})
 			continue
 		}
+
+		partIndex := i + 1
+		r.emitPartProgress(part.ID, partIndex, PartProgressStarted, nil)
 
 		before, err := r.snapshotCounts()
 		if err != nil {
@@ -300,7 +313,7 @@ func (r Run) Execute(ctx context.Context) (Result, error) {
 		case sdk.PartKindDeterministic:
 			outcome, err = r.runDeterministic(root, part)
 		case sdk.PartKindAIGoal:
-			outcome, err = r.runAIGoal(ctx, part, tracker)
+			outcome, err = r.runAIGoal(ctx, part, partIndex, tracker)
 		default:
 			err = fmt.Errorf("run: part %q has unknown kind %q", part.ID, part.Kind)
 		}
@@ -314,6 +327,7 @@ func (r Run) Execute(ctx context.Context) (Result, error) {
 		}
 		outcome.Boundary = diffBoundary(r.Environment.ChatIDs, before, after)
 		result.Parts = append(result.Parts, outcome)
+		r.emitPartProgress(part.ID, partIndex, PartProgressCompleted, nil)
 
 		if outcome.CeilingTrip != nil {
 			result.CeilingTrip = outcome.CeilingTrip
@@ -432,6 +446,18 @@ func (r Run) runDeterministic(root *cw.ExecutionContext, part Part) (PartOutcome
 	return outcome, nil
 }
 
+// emitPartProgress builds and delivers a ProgressSnapshot for the named
+// Part, when r.OnProgress is set — a no-op otherwise. See Run.OnProgress.
+func (r Run) emitPartProgress(partID string, partIndex int, phase PartPhase, task *actor.ProgressSnapshot) {
+	if r.OnProgress == nil {
+		return
+	}
+	r.OnProgress(ProgressSnapshot{
+		PartID: partID, PartIndex: partIndex, PartCount: len(r.Parts),
+		Phase: phase, Task: task,
+	})
+}
+
 // runAIGoal drives part's ai-goal payload through goal.CampaignState and
 // actor.Loop, task by task (mirroring actor.Loop.RunCampaign's own
 // eligible-task iteration — see nextEligibleTask), checking tracker after
@@ -444,7 +470,7 @@ func (r Run) runDeterministic(root *cw.ExecutionContext, part Part) (PartOutcome
 // mid-task — interrupting inside a single task's own step loop would need a
 // per-iteration hook actor.Loop does not expose, and adding one is out of
 // this package's scope.
-func (r Run) runAIGoal(ctx context.Context, part Part, tracker *ceilingTracker) (PartOutcome, error) {
+func (r Run) runAIGoal(ctx context.Context, part Part, partIndex int, tracker *ceilingTracker) (PartOutcome, error) {
 	outcome := PartOutcome{PartID: part.ID, Title: part.Title, Kind: part.Kind}
 	if part.aiGoal == nil {
 		return outcome, fmt.Errorf("run: ai-goal part %q declares no goal/provider (build it with NewAIGoalPart)", part.ID)
@@ -453,6 +479,11 @@ func (r Run) runAIGoal(ctx context.Context, part Part, tracker *ceilingTracker) 
 
 	cfg := spec.cfg
 	cfg.Now = r.Environment.Now // the run's clock always wins — see AIGoalPartInput.Config's own doc comment.
+	if r.OnProgress != nil {
+		cfg.OnProgress = func(task actor.ProgressSnapshot) {
+			r.emitPartProgress(part.ID, partIndex, PartProgressTask, &task)
+		}
+	}
 
 	engine := observe.NewEngine(r.Environment.Emulator, observe.ChatRef{ChatID: cfg.ChatID})
 	campaignState, err := goal.NewCampaignState(spec.goalDef, r.Environment.Now)

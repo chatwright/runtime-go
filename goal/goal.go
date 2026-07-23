@@ -8,7 +8,11 @@
 // opinion on how a task is attempted — only on what a valid Goal looks like
 // and which state transitions a campaign may legally make. The
 // observe-plan-act-validate loop that drives an AI actor through a
-// CampaignState (package actor) is a later slice.
+// CampaignState (package actor) is a later slice. This package does depend
+// on observe (for Criteria's Observation parameter — see Task.Criteria):
+// observe is itself I/O-free, a pure projection over data the platform
+// package already read, so this dependency does not compromise "no I/O"; it
+// stays one-directional (observe never imports goal).
 //
 // Typical use:
 //
@@ -26,9 +30,32 @@
 package goal
 
 import (
+	"context"
 	"fmt"
 	"strings"
+
+	"chatwright.dev/runtime/observe"
 )
+
+// Criteria is an optional, machine-checkable predicate for a Task's
+// completion: given the current observation, it reports whether the
+// task's success condition already holds. This is the loop-side backstop
+// spec/ideas/evidence-defined-completion.md describes, alongside (never
+// instead of) the prose SuccessCriteria the actor itself reads — see
+// Task.Criteria.
+//
+// A Criteria closure may also express a datastate assertion via the
+// existing datastate.Executor seam (spec/ideas/evidence-defined-completion.md's
+// "and/or a datastate assertion") by capturing a *datastate.Runner and
+// ignoring obs entirely; this package depends on neither datastate nor any
+// concrete executor to keep that seam open without importing it here.
+//
+// Returning (false, nil) means "not yet met" — the ordinary, expected
+// outcome on most iterations, never treated as an error. A non-nil error
+// means evaluation itself failed (e.g. a query execution error, as
+// distinct from an assertion that ran and did not hold) and is surfaced to
+// the caller driving the loop, not silently treated as "not met".
+type Criteria func(ctx context.Context, obs observe.Observation) (bool, error)
 
 // Task is one trackable unit of work inside a Goal. Success is judged by
 // prose SuccessCriteria — the contract never prescribes the bot commands or
@@ -43,6 +70,24 @@ type Task struct {
 	DependsOn       []string `json:"dependsOn"`
 	SuccessCriteria string   `json:"successCriteria"`
 	Milestones      []string `json:"milestones"`
+
+	// Criteria is this task's optional machine-checkable completion seam —
+	// Go-only, never serialised (the wire's Task shape is unchanged: this
+	// field carries no `json` tag other than "-"). When set, the loop
+	// evaluates it after every executed action and completes the task
+	// deterministically the moment it holds — see
+	// spec/ideas/evidence-defined-completion.md. Nil means "prose only",
+	// the pre-existing behaviour: the actor's own task-done proposal (and
+	// budgets, as the ultimate backstop) are all that end the task.
+	Criteria Criteria `json:"-"`
+
+	// ContentRules is this task's optional machine-checkable content seam
+	// — Go-only, never serialised. When set (non-empty), it overrides the
+	// owning Goal's own ContentRules for this task entirely rather than
+	// merging with it — see EffectiveContentRules and
+	// spec/ideas/proposal-content-constraints.md's own open question on
+	// rule scope ("task overriding goal").
+	ContentRules ContentRules `json:"-"`
 }
 
 // Goal is one campaign's product-level intent: a natural-language outcome
@@ -57,6 +102,12 @@ type Goal struct {
 	Tasks       []Task   `json:"tasks"`
 	Constraints []string `json:"constraints"`
 	Budgets     Budgets  `json:"budgets"`
+
+	// ContentRules is this goal's optional machine-checkable content seam
+	// — Go-only, never serialised — applied to every Task that does not
+	// declare its own (non-empty) ContentRules. See
+	// EffectiveContentRules.
+	ContentRules ContentRules `json:"-"`
 }
 
 // Validate checks that g is well-formed:
