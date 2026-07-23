@@ -76,7 +76,7 @@ func validateBundleFile(t *testing.T, schema *jsonschema.Schema, path string) {
 	if err != nil {
 		t.Fatalf("open %s: %v", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	inst, err := jsonschema.UnmarshalJSON(f)
 	if err != nil {
@@ -307,7 +307,7 @@ func TestTwoPartGreetbotProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	defer readBack.Close()
+	defer func() { _ = readBack.Close() }()
 	decoded, err := sdk.Read(readBack)
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)

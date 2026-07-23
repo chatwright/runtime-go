@@ -237,7 +237,7 @@ func TestScriptedCampaignBundleAgainstGreetbotEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	defer readBack.Close()
+	defer func() { _ = readBack.Close() }()
 	decoded, err := sdk.Read(readBack)
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)

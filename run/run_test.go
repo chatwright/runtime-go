@@ -23,8 +23,7 @@ type fakeClock struct{ t time.Time }
 
 func newFakeClock() *fakeClock { return &fakeClock{t: time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)} }
 
-func (c *fakeClock) now() time.Time          { return c.t }
-func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+func (c *fakeClock) now() time.Time { return c.t }
 
 // fakeEmulator is a minimal, fully controlled stand-in for a live
 // platform.Emulator, implementing the whole interface over one shared,

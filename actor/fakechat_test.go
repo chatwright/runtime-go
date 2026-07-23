@@ -66,14 +66,6 @@ func (f *fakeChat) queueBotReply(text string, actions [][]platform.Action) {
 	})
 }
 
-// queueNoReply schedules the next SubmitText/SubmitClick call to produce no
-// bot reply at all — a no-effect action.
-func (f *fakeChat) queueNoReply() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.queue = append(f.queue, func(int64) {})
-}
-
 // appendBotMessageLocked appends a bot message to both the journal and the
 // WaitForMessage-addressable list. Caller must hold f.mu.
 func (f *fakeChat) appendBotMessageLocked(chatID int64, id int, text string, actions [][]platform.Action) {

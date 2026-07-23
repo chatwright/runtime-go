@@ -6,8 +6,8 @@ package anthropic
 // Update both together when they drift from the source below.
 const PricingSnapshotDate = "2026-06-24"
 
-// pricingSourceURL is where PricingUSDPerMillionTokens was read from.
-const pricingSourceURL = "https://platform.claude.com/docs/en/pricing"
+// PricingUSDPerMillionTokens was read from
+// https://platform.claude.com/docs/en/pricing.
 
 // modelPrice is one model's per-token list price, in US dollars per
 // 1,000,000 tokens.

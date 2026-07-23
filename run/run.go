@@ -465,10 +465,7 @@ func (r Run) runAIGoal(ctx context.Context, part Part, tracker *ceilingTracker) 
 	}
 
 	priorEvents := 0
-	for {
-		if campaignState.Stopped() {
-			break
-		}
+	for !campaignState.Stopped() {
 		taskID, ok := nextEligibleTask(spec.goalDef, campaignState)
 		if !ok {
 			break
