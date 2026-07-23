@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- `arena`: a public package running Chatwright's actor-model comparison
+  matrix — the same `Scenario` (goal + platform environment), the same
+  budgets, across a declared set of provider/model configurations, N
+  repeats each. Ported from the scratchpad harness that produced the first
+  actor-model arena report
+  ([chatwright/backstage research/model-arena-2026-07-23](https://github.com/chatwright/backstage/tree/main/research/model-arena-2026-07-23)),
+  restructured per [spec/ideas/actor-model-arena.md](https://github.com/chatwright/chatwright/blob/main/spec/ideas/actor-model-arena.md):
+  `arena.Matrix`/`arena.Run` execute one per-model block (an
+  evict-others-then-right-size `Loader` hook, one untimed mandatory
+  warm-up with cold-start recorded as its own metric, then N timed
+  repeats) sequentially per provider; `arena.WriteReport` renders the
+  spec's full metric list (completion vs. independently-verified
+  evidence, cold-start, latency p50/p95, wall time, tokens, structured-
+  output-mode share, the required retry breakdown, stop reasons, steps,
+  per-cell bundle names) plus an environment block recording declared
+  hardware, context lengths and each provider's actual load outcome.
+  `LMStudioLoader` (the `lms` CLI) and `OllamaLoader` (Ollama's native
+  `/api/generate` pre-load) both degrade to a JIT load with a long
+  warm-up timeout, never a hard failure, when their tooling is absent —
+  recorded in the environment block either way. `GreetbotScenario` is the
+  built-in first scenario (send `/start`, click "English", acknowledge
+  the in-place-edited greeting, declare done), with a deterministic
+  journal-level `Verify` step independent of the model's own claim
+  (evidence over claims). Unlike the harness, `Run` never writes a bundle
+  or a JSON "sidecar" to disk itself — every cell's per-call detail
+  (response-format mode, wall time, transport errors) moves from a
+  sidecar file into a typed `CallRecord` inside the returned `Results`;
+  callers persist whatever they need.
 - `actor/openai`: an OpenAI-compatible `actor.Provider` for
   `POST {BaseURL}/chat/completions` — Ollama, LM Studio, OpenRouter, vLLM and
   OpenAI itself. Ported from
