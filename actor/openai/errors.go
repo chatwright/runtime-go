@@ -1,6 +1,9 @@
 package openai
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // AuthenticationError wraps an OpenAI-compatible server's 401/403 response:
 // the API key is missing, invalid, revoked, or lacks access to the
@@ -31,19 +34,29 @@ func (e *RateLimitError) Unwrap() error { return e.Err }
 // could not be turned into a valid actor.Proposal: malformed JSON even
 // after the one repair attempt (see response.go), a JSON object that does
 // not match the response contract (missing/invalid "kind", or a kind whose
-// required field is empty), or a response with no choices/content at all.
-// Raw carries the model's raw reply text (truncated for the error message)
-// so a developer can see what went wrong; Propose never fabricates a
-// Proposal in its place.
+// required field is empty), or a response with no usable text in any field
+// at all. Raw carries the model's raw reply text (truncated for the error
+// message) so a developer can see what went wrong; Propose never
+// fabricates a Proposal in its place.
 type InvalidResponseError struct {
 	// Raw is the model's raw reply text that failed to parse, or empty if
-	// the response carried no content at all.
+	// the response carried no usable text in any field at all.
 	Raw string
 	// FinishReason is the response's first choice's finish_reason, when
 	// known — e.g. "length" or "content_filter" can explain why Raw is
-	// empty or truncated.
+	// empty or truncated. "length" is called out explicitly in Error()
+	// (see the arena evidence in DefaultMaxTokens's doc comment).
 	FinishReason string
-	Err          error
+	// Source names which response field Raw was read from — one of
+	// "content" (the normal path), "reasoning_content" or "reasoning" (a
+	// reasoning model routed its reply there instead — see response.go's
+	// responseText) — or empty when the response carried no usable text in
+	// any field (Raw is "" in that case too). Called out in Error() only
+	// when it names a reasoning field, since that is the unusual case a
+	// developer needs to know about; the normal "content" path is silent
+	// exactly as it always was.
+	Source string
+	Err    error
 }
 
 func (e *InvalidResponseError) Error() string {
@@ -52,8 +65,22 @@ func (e *InvalidResponseError) Error() string {
 	if len(raw) > maxRawInError {
 		raw = raw[:maxRawInError] + "…"
 	}
-	if e.FinishReason != "" {
-		return fmt.Sprintf("actor/openai: invalid response (finish_reason=%s): %v (raw: %q)", e.FinishReason, e.Err, raw)
+
+	var tags []string
+	switch e.FinishReason {
+	case "":
+		// nothing to tag
+	case "length":
+		tags = append(tags, "finish_reason=length, reply likely truncated before max_tokens was reached")
+	default:
+		tags = append(tags, fmt.Sprintf("finish_reason=%s", e.FinishReason))
+	}
+	if e.Source != "" && e.Source != fieldContent {
+		tags = append(tags, fmt.Sprintf("source=%s", e.Source))
+	}
+
+	if len(tags) > 0 {
+		return fmt.Sprintf("actor/openai: invalid response (%s): %v (raw: %q)", strings.Join(tags, ", "), e.Err, raw)
 	}
 	return fmt.Sprintf("actor/openai: invalid response: %v (raw: %q)", e.Err, raw)
 }

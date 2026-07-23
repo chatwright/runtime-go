@@ -299,6 +299,197 @@ func TestPropose_MissingContent(t *testing.T) {
 	}
 }
 
+// chatCompletionSuccessField is like chatCompletionSuccess but writes the
+// reply into an arbitrary message field name instead of always "content" —
+// used by the reasoning_content/reasoning tests below to build a response
+// whose "content" is empty and the reply text lives in a reasoning field
+// instead (see chatwright/runtime-go#3).
+func chatCompletionSuccessField(model, field, text, finishReason string) map[string]any {
+	message := map[string]any{"role": "assistant", "content": ""}
+	if field != "" {
+		message[field] = text
+	}
+	return map[string]any{
+		"id": "chatcmpl-test", "object": "chat.completion", "model": model,
+		"choices": []map[string]any{
+			{"index": 0, "message": message, "finish_reason": finishReason},
+		},
+		"usage": map[string]any{"prompt_tokens": 20, "completion_tokens": 45, "total_tokens": 65},
+	}
+}
+
+// TestPropose_ReasoningContentFallback_ValidJSON covers a reasoning model
+// that routes its ENTIRE structured-output reply into
+// message.reasoning_content and leaves message.content empty — the
+// LM Studio/DeepSeek-style shape the first actor-model arena run hit with
+// qwen/qwen3.6-27b (chatwright/runtime-go#3): billed output tokens, empty
+// content, a valid proposal sitting unread in reasoning_content. Propose
+// must extract and return the Proposal from that field instead of treating
+// the empty content as no reply at all.
+func TestPropose_ReasoningContentFallback_ValidJSON(t *testing.T) {
+	reply := `{"kind":"give-up","text":"","action_id":"","rationale":"reasoning model routed its reply into reasoning_content"}`
+	srv, _ := fakeServer(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		writeJSON(t, w, http.StatusOK, chatCompletionSuccessField("fake-model", "reasoning_content", reply, "stop"))
+	})
+	p := newTestProvider(t, srv)
+
+	got, usage, err := p.Propose(context.Background(), samplePrompt())
+	if err != nil {
+		t.Fatalf("Propose: %v", err)
+	}
+	want := actor.Proposal{Kind: actor.ProposeGiveUp, Rationale: "reasoning model routed its reply into reasoning_content"}
+	if got != want {
+		t.Errorf("Propose() = %+v, want %+v", got, want)
+	}
+	// Usage.OutputTokens must still reflect what the server billed, even
+	// though the billed text was never in "content" — this package never
+	// second-guesses the server's own token accounting.
+	if usage.OutputTokens != 45 {
+		t.Errorf("usage.OutputTokens = %d, want 45", usage.OutputTokens)
+	}
+}
+
+// TestPropose_ReasoningFieldFallback_ValidJSON covers the alternate
+// "reasoning" field name a minority of other OpenAI-compatible servers use
+// for the same purpose, checked only when both content and
+// reasoning_content are empty.
+func TestPropose_ReasoningFieldFallback_ValidJSON(t *testing.T) {
+	reply := `{"kind":"task-done","text":"","action_id":"","rationale":"criteria visibly met"}`
+	srv, _ := fakeServer(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		writeJSON(t, w, http.StatusOK, chatCompletionSuccessField("fake-model", "reasoning", reply, "stop"))
+	})
+	p := newTestProvider(t, srv)
+
+	got, _, err := p.Propose(context.Background(), samplePrompt())
+	if err != nil {
+		t.Fatalf("Propose: %v", err)
+	}
+	want := actor.Proposal{Kind: actor.ProposeTaskDone, Rationale: "criteria visibly met"}
+	if got != want {
+		t.Errorf("Propose() = %+v, want %+v", got, want)
+	}
+}
+
+// TestPropose_ReasoningFieldGarbage_TypedError covers a reasoning field
+// (either name) that is NOT a valid proposal at all — prose, or JSON that
+// does not satisfy the response contract. Some reply text having arrived is
+// never enough on its own: Propose must still return the typed
+// *openai.InvalidResponseError naming which field it came from, never
+// fabricate a Proposal.
+func TestPropose_ReasoningFieldGarbage_TypedError(t *testing.T) {
+	tests := []struct {
+		name  string
+		field string
+	}{
+		{"reasoning_content prose, not JSON", "reasoning_content"},
+		{"reasoning prose, not JSON", "reasoning"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := fakeServer(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+				writeJSON(t, w, http.StatusOK, chatCompletionSuccessField("fake-model", tc.field,
+					"Let me think about this step by step... the user wants to add items.", "stop"))
+			})
+			p := newTestProvider(t, srv)
+
+			got, _, err := p.Propose(context.Background(), samplePrompt())
+			var invalid *openai.InvalidResponseError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("Propose() error = %v (%T), want *openai.InvalidResponseError", err, err)
+			}
+			if got != (actor.Proposal{}) {
+				t.Errorf("Propose() fabricated a Proposal from %s garbage: %+v", tc.field, got)
+			}
+			if invalid.Source != tc.field {
+				t.Errorf("invalid.Source = %q, want %q", invalid.Source, tc.field)
+			}
+			if !strings.Contains(err.Error(), tc.field) {
+				t.Errorf("error message %q does not name the source field %q", err.Error(), tc.field)
+			}
+		})
+	}
+}
+
+// TestPropose_ContentWinsOverReasoningContent proves precedence: when
+// message.content is non-empty, message.reasoning_content is never even
+// inspected — unchanged behaviour from before this package read reasoning
+// fields at all.
+func TestPropose_ContentWinsOverReasoningContent(t *testing.T) {
+	contentReply := `{"kind":"give-up","text":"","action_id":"","rationale":"from content"}`
+	reasoningReply := `{"kind":"task-done","text":"","action_id":"","rationale":"from reasoning_content, must be ignored"}`
+	srv, _ := fakeServer(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"id": "chatcmpl-test", "object": "chat.completion", "model": "fake-model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"message": map[string]any{
+						"role":              "assistant",
+						"content":           contentReply,
+						"reasoning_content": reasoningReply,
+					},
+					"finish_reason": "stop",
+				},
+			},
+		})
+	})
+	p := newTestProvider(t, srv)
+
+	got, _, err := p.Propose(context.Background(), samplePrompt())
+	if err != nil {
+		t.Fatalf("Propose: %v", err)
+	}
+	want := actor.Proposal{Kind: actor.ProposeGiveUp, Rationale: "from content"}
+	if got != want {
+		t.Errorf("Propose() = %+v, want %+v (content must win over reasoning_content)", got, want)
+	}
+}
+
+// TestPropose_FinishReasonLength_SurfacesInError covers a reply cut off by
+// finish_reason "length" — the arena's own trigger for raising
+// DefaultMaxTokens (see its doc comment) — whether content landed empty or
+// truncated mid-JSON. The typed error must name finish_reason=length and
+// call out that the reply was likely truncated, so a developer or the
+// loop's own record does not have to guess why parsing failed.
+func TestPropose_FinishReasonLength_SurfacesInError(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{"empty content", ""},
+		{"truncated JSON mid-object", `{"kind":"send-text","text":"partial rea`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := fakeServer(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+				writeJSON(t, w, http.StatusOK, map[string]any{
+					"id": "chatcmpl-test", "object": "chat.completion", "model": "fake-model",
+					"choices": []map[string]any{
+						{"index": 0, "message": map[string]any{"role": "assistant", "content": tc.content}, "finish_reason": "length"},
+					},
+				})
+			})
+			p := newTestProvider(t, srv)
+
+			_, _, err := p.Propose(context.Background(), samplePrompt())
+			var invalid *openai.InvalidResponseError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("Propose() error = %v (%T), want *openai.InvalidResponseError", err, err)
+			}
+			if invalid.FinishReason != "length" {
+				t.Errorf("invalid.FinishReason = %q, want length", invalid.FinishReason)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "finish_reason=length") {
+				t.Errorf("error message %q does not name finish_reason=length", msg)
+			}
+			if !strings.Contains(strings.ToLower(msg), "truncat") {
+				t.Errorf("error message %q does not explain the truncation", msg)
+			}
+		})
+	}
+}
+
 // TestPropose_JSONSchemaRejected_FallsBackToJSONObject covers the graceful-
 // degradation path: a server that rejects response_format:"json_schema"
 // with a 400 gets exactly one retry with response_format:"json_object" (and

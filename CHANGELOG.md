@@ -13,6 +13,23 @@
   Mirrors `actor/anthropic`'s structured-output contract with a graceful
   `json_schema` → `json_object` one-retry degradation for servers that
   reject strict structured output.
+- `actor/openai`: fixed [#3](https://github.com/chatwright/runtime-go/issues/3),
+  found by the first actor-model arena run — `qwen/qwen3.6-27b` via LM
+  Studio billed 39-54 output tokens on 4/4 calls while `Propose` still
+  reported "empty content", because the model routed its entire reply into
+  `message.reasoning_content` instead of `message.content`. `Propose` now
+  reads `message.reasoning_content`, then the alternate name
+  `message.reasoning`, whenever `content` is empty — the same strict,
+  never-fabricate parse/validate path `content` already went through, so a
+  reasoning field holding prose instead of the proposal JSON still
+  surfaces as `*openai.InvalidResponseError` (now carrying a `Source`
+  field naming which field was read). `content` continues to win outright
+  whenever it is non-empty, so existing behaviour is unchanged for every
+  non-reasoning model. Also raised `openai.DefaultMaxTokens` 1024 → 2048,
+  matching the value the arena reran every cell at after observing
+  `finish_reason=length` truncating replies mid-JSON at 1024; that
+  `finish_reason` is now called out explicitly, with a truncation hint, in
+  `*openai.InvalidResponseError`'s message.
 
 ## 0.1.0
 
