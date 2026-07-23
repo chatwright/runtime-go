@@ -3,9 +3,12 @@
 The [Chatwright](https://chatwright.dev) engine: platform emulation and the
 testing runtime for conversational applications.
 
-Its sibling, [`@chatwright/runtime`](https://github.com/chatwright/runtime-ts)
-(runtime-ts), is the browser runtime — the orchestrator behind the Studio
-Playground, currently a scaffold per
+Its sibling repository,
+[runtime-ts](https://github.com/chatwright/runtime-ts), is the browser
+runtime — published to npm as `@chatwright/runtime`, just as this
+repository (runtime-go) publishes the Go module `chatwright.dev/runtime`.
+It is the orchestrator behind the Studio Playground, currently a scaffold
+per
 [decision 0012](https://github.com/chatwright/chatwright/blob/main/spec/decisions/0012-black-box-bot-protocol.md).
 The two runtimes share language-independent contracts — the
 [run-bundle v1 format](https://chatwright.dev/formats/run-bundle/v1) and the
