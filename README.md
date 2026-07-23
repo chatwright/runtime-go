@@ -13,7 +13,10 @@ per
 The two runtimes share language-independent contracts — the
 [run-bundle v1 format](https://chatwright.dev/formats/run-bundle/v1) and the
 black-box bot protocol — never code; conformance is proven by shared
-fixtures.
+fixtures. **Parity is the shipping rule** (decision 0015): every runtime
+feature ships in both runtimes with identical semantics; deviations exist
+only under documented technical limitation — see the
+[runtime parity register](https://github.com/chatwright/chatwright/blob/main/docs/runtime-parity.md).
 
 This module is where a Chatwright run actually happens. It emulates a chat
 platform's API server (Telegram first; the WhatsApp surface is present),
