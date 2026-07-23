@@ -386,7 +386,7 @@ func TestEvidenceRecordsCanonicalQueryAndParams(t *testing.T) {
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"Name", "AttachmentPoint", "Holder", "Query", "Params", "Outcome", "TotalRows", "ReturnedRows", "Truncated", "Preview"} {
+	for _, field := range []string{"name", "attachmentPoint", "holder", "query", "params", "outcome", "totalRows", "returnedRows", "truncated", "preview"} {
 		if _, ok := decoded[field]; !ok {
 			t.Fatalf("evidence JSON missing field %q: %s", field, encoded)
 		}

@@ -2,20 +2,20 @@
   "providerConfig": "example-provider model=example-scripted-v1",
   "entries": [
     {
-      "key": "426c806591c037410a3c22bac3180c8c8a546d93b38061c7aa9d067c92057c80",
+      "key": "54df529d6b675a0da1a8f37a9e758797812c25fb6284812097622e424adf0d52",
       "promptSummary": "goal=listus-shopping-list task=add-items observation#2 messages=1 history=0",
       "proposal": {
-        "Kind": "send-text",
-        "Text": "milk, eggs, bread",
-        "ActionID": "",
-        "ObservationSequence": 0,
-        "Rationale": "the bot asked what to add; the task is to add several items"
+        "kind": "send-text",
+        "text": "milk, eggs, bread",
+        "actionId": "",
+        "observationSequence": 0,
+        "rationale": "the bot asked what to add; the task is to add several items"
       },
       "usage": {
-        "Model": "example-scripted-v1",
-        "InputTokens": 42,
-        "OutputTokens": 7,
-        "Latency": 0
+        "model": "example-scripted-v1",
+        "inputTokens": 42,
+        "outputTokens": 7,
+        "latencyNanoseconds": 0
       }
     }
   ]

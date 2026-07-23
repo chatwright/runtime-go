@@ -38,11 +38,11 @@ import (
 // completion may reach; the reporting layer, not this package, interprets
 // them.
 type Task struct {
-	ID              string
-	Title           string
-	DependsOn       []string
-	SuccessCriteria string
-	Milestones      []string
+	ID              string   `json:"id"`
+	Title           string   `json:"title"`
+	DependsOn       []string `json:"dependsOn"`
+	SuccessCriteria string   `json:"successCriteria"`
+	Milestones      []string `json:"milestones"`
 }
 
 // Goal is one campaign's product-level intent: a natural-language outcome
@@ -51,12 +51,12 @@ type Task struct {
 // see the goal-and-task-contract feature's
 // goal-does-not-leak-platform-mechanics acceptance criterion.
 type Goal struct {
-	ID          string
-	Title       string
-	Description string
-	Tasks       []Task
-	Constraints []string
-	Budgets     Budgets
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Tasks       []Task   `json:"tasks"`
+	Constraints []string `json:"constraints"`
+	Budgets     Budgets  `json:"budgets"`
 }
 
 // Validate checks that g is well-formed:

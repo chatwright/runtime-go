@@ -170,50 +170,53 @@ type Expectation func(rows []Row) error
 // Evidence is the canonical, JSON-serialisable record of one executed
 // data-state assertion: the exact DTQL query and parameters, the holder it
 // ran against, its pass/fail outcome, and a bounded, redacted, normalised
-// preview of the rows it returned. Exported fields carry no `json` tags —
-// Go's default encoding (exported name as key) is this package's stable
-// shape, matching branching.Evidence and goal.CampaignSnapshot elsewhere in
-// this module.
+// preview of the rows it returned. Every exported field carries an explicit
+// lower-camel-case `json` tag — Evidence reaches a run bundle (via
+// bundle.AIGoalSection.Evidence) and the whole run-bundle wire is
+// uniformly camelCase, so this package's stable shape is the tagged one,
+// not Go's default (exported-name) encoding. branching.Evidence and
+// goal.CampaignSnapshot are untagged still, but neither reaches the bundle
+// wire this package does.
 type Evidence struct {
 	// Name is the triggering Assertion.Name, correlating this evidence to
 	// the message, checkpoint or branch that attached it.
-	Name string
+	Name string `json:"name"`
 	// AttachmentPoint is where in the scenario this assertion ran.
-	AttachmentPoint AttachmentPoint
+	AttachmentPoint AttachmentPoint `json:"attachmentPoint"`
 	// Holder is the resolved holder name the query ran against (even an
 	// unresolved request records the name that was asked for).
-	Holder string
+	Holder string `json:"holder"`
 	// Query is the concrete DTQL text executed.
-	Query string
+	Query string `json:"query"`
 	// Params is a detached copy of the query's named parameters.
-	Params map[string]any
+	Params map[string]any `json:"params"`
 	// Outcome is OutcomePassed or OutcomeFailed.
-	Outcome Outcome
+	Outcome Outcome `json:"outcome"`
 	// FailureMessage is set when Outcome is OutcomeFailed: holder
 	// resolution, query execution or Expect's failure message.
-	FailureMessage string
+	FailureMessage string `json:"failureMessage"`
 	// TotalRows is how many rows the query returned before any preview
 	// bound was applied.
-	TotalRows int
+	TotalRows int `json:"totalRows"`
 	// ReturnedRows is how many rows are present in Preview.
-	ReturnedRows int
+	ReturnedRows int `json:"returnedRows"`
 	// Truncated is true when Preview omits rows (TotalRows > ReturnedRows)
 	// or drops fields from at least one previewed row.
-	Truncated bool
+	Truncated bool `json:"truncated"`
 	// Preview is the bounded, redacted, normalised recordset: at most
 	// Limits.MaxRows rows, each with at most Limits.MaxFields fields.
 	// Redacted fields are present with their value replaced by
 	// RedactedValue rather than omitted, so evidence still declares which
 	// fields exist.
-	Preview []Row
+	Preview []Row `json:"preview"`
 	// RedactedFields lists the field names configured for redaction (the
 	// declared policy), regardless of whether any previewed row contained
 	// them.
-	RedactedFields []string
+	RedactedFields []string `json:"redactedFields"`
 	// ExcludedFields lists the field names Normalization removed from the
 	// comparison basis. They remain visible in Preview: exclusion only
 	// means "not part of the assertion", never "hidden from evidence".
-	ExcludedFields []string
+	ExcludedFields []string `json:"excludedFields"`
 }
 
 var (

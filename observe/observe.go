@@ -25,7 +25,7 @@ package observe
 // Chatwright's own chat identity (see chatwright.Chat.PrivateChat) — never a
 // raw platform chat ID scraped from the wire.
 type ChatRef struct {
-	ChatID int64
+	ChatID int64 `json:"chatId"`
 }
 
 // Actor identifies which side of a conversation produced a VisibleMessage. It
@@ -48,12 +48,12 @@ func (a Actor) String() string { return string(a) }
 // platform-native message IDs, callback data or wire payloads (see
 // spec/features/chatwright/observation-model/visible-conversation).
 type VisibleMessage struct {
-	ID      string // stable synthetic Chatwright identity for this logical message, e.g. "msg7"
-	Version int    // monotonic version of this logical message; 0 for the original send
-	Edited  bool   // true once Version has advanced past 0
-	Actor   Actor  // who produced the message
-	Text    string
-	Actions []AvailableAction // interactions currently attached to this message
+	ID      string            `json:"id"`      // stable synthetic Chatwright identity for this logical message, e.g. "msg7"
+	Version int               `json:"version"` // monotonic version of this logical message; 0 for the original send
+	Edited  bool              `json:"edited"`  // true once Version has advanced past 0
+	Actor   Actor             `json:"actor"`   // who produced the message
+	Text    string            `json:"text"`
+	Actions []AvailableAction `json:"actions"` // interactions currently attached to this message
 }
 
 // AvailableAction is a generic, opaque interaction an actor can take: a
@@ -63,9 +63,9 @@ type VisibleMessage struct {
 // Journal/Transcript trace, not through this type (see
 // spec/features/chatwright/observation-model/actor-actions).
 type AvailableAction struct {
-	ID     string // opaque, stable Chatwright action identity
-	Label  string // user-visible text
-	SeenAt int64  // the Observation.Sequence this action was (re)issued at; copy this into an ActionProposal
+	ID     string `json:"id"`     // opaque, stable Chatwright action identity
+	Label  string `json:"label"`  // user-visible text
+	SeenAt int64  `json:"seenAt"` // the Observation.Sequence this action was (re)issued at; copy this into an ActionProposal
 }
 
 // ChangeKind classifies one entry in an Observation's Changes feed. It is a
@@ -93,16 +93,16 @@ func (k ChangeKind) String() string { return string(k) }
 // about what changed without diffing two Observations themselves (see
 // spec/features/chatwright/observation-model/observation-lineage).
 type Change struct {
-	Kind      ChangeKind
-	MessageID string
-	Actor     Actor
+	Kind      ChangeKind `json:"kind"`
+	MessageID string     `json:"messageId"`
+	Actor     Actor      `json:"actor"`
 	// PreviousVersion is set for ChangeMessageEdited: the message's Version
 	// before this change.
-	PreviousVersion int
+	PreviousVersion int `json:"previousVersion"`
 	// Version is the message's Version after this change (ChangeNewMessage,
 	// ChangeMessageEdited) or its current, unchanged Version
 	// (ChangeActionsChanged).
-	Version int
+	Version int `json:"version"`
 }
 
 // Observation is one platform-neutral snapshot of a chat's visible
@@ -111,15 +111,15 @@ type Change struct {
 // actors never build or diff one by hand.
 type Observation struct {
 	// Sequence is monotonic per Engine, starting at 1.
-	Sequence int64
+	Sequence int64 `json:"sequence"`
 	// PreviousSequence is the Sequence of the Observation this one
 	// supersedes; 0 for an Engine's first Observation.
-	PreviousSequence int64
-	Chat             ChatRef
+	PreviousSequence int64   `json:"previousSequence"`
+	Chat             ChatRef `json:"chat"`
 	// Messages is chronological, oldest to newest: one entry per currently
 	// visible logical message, at its current (possibly-edited) version.
-	Messages []VisibleMessage
+	Messages []VisibleMessage `json:"messages"`
 	// Changes is empty for an Engine's first Observation; otherwise the
 	// explicit differences since PreviousSequence.
-	Changes []Change
+	Changes []Change `json:"changes"`
 }

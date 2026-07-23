@@ -23,9 +23,9 @@ type User struct {
 // Action is a neutral interactive action (a button) captured from a bot message.
 // Telegram inline buttons and WhatsApp interactive replies both normalize to it.
 type Action struct {
-	Label string // user-visible text (Telegram button text / WhatsApp reply title)
-	ID    string // stable identifier (Telegram callback_data / WhatsApp reply id)
-	URL   string // set for link actions
+	Label string `json:"label"` // user-visible text (Telegram button text / WhatsApp reply title)
+	ID    string `json:"id"`    // stable identifier (Telegram callback_data / WhatsApp reply id)
+	URL   string `json:"url"`   // set for link actions
 }
 
 // Message is a neutral bot message captured from a platform's outbound API call.
@@ -79,15 +79,15 @@ const (
 // seam, not the actor-facing observation surface; the observe package is
 // where raw platform payloads are dropped before an actor ever sees them.
 type JournalEntry struct {
-	Direction    Direction
-	Kind         JournalEntryKind
-	MessageID    int // logical message identity, shared by inbound/outbound entries in this chat; 0 when Kind has no message identity of its own
-	RefMessageID int // JournalEntryAction only: the message the action targeted
-	Version      int // JournalEntryMessage only: 0 = original send/inbound, N = the Nth edit
-	Text         string
-	Actions      [][]Action // JournalEntryMessage only: actions attached to this entry, in platform row/col layout
-	Method       string     // JournalEntryUncaptured only: the Bot API method name that was called
-	At           time.Time
+	Direction    Direction        `json:"direction"`
+	Kind         JournalEntryKind `json:"kind"`
+	MessageID    int              `json:"messageId"`    // logical message identity, shared by inbound/outbound entries in this chat; 0 when Kind has no message identity of its own
+	RefMessageID int              `json:"refMessageId"` // JournalEntryAction only: the message the action targeted
+	Version      int              `json:"version"`      // JournalEntryMessage only: 0 = original send/inbound, N = the Nth edit
+	Text         string           `json:"text"`
+	Actions      [][]Action       `json:"actions"` // JournalEntryMessage only: actions attached to this entry, in platform row/col layout
+	Method       string           `json:"method"`  // JournalEntryUncaptured only: the Bot API method name that was called
+	At           time.Time        `json:"at"`
 
 	// FromID is the platform-native identity of this entry's originator:
 	// the Telegram user id of the client actor for a client-originated
@@ -97,7 +97,7 @@ type JournalEntry struct {
 	// actually know. This is what lets a run-bundle roster (see the bundle
 	// package's Actor.PlatformIdentities) attribute every journal entry to
 	// whoever produced it.
-	FromID int64
+	FromID int64 `json:"fromId"`
 }
 
 // Emulator is a running fake platform API server. It owns everything about

@@ -8,21 +8,21 @@ import "time"
 type Budgets struct {
 	// MaxSteps caps the number of steps CampaignState.RecordStep counts.
 	// Zero means unlimited.
-	MaxSteps int
+	MaxSteps int `json:"maxSteps"`
 
 	// MaxDuration caps wall-clock time elapsed since the campaign started,
 	// measured by the CampaignState's injected clock. Zero means unlimited.
-	MaxDuration time.Duration
+	MaxDuration time.Duration `json:"maxDurationNanoseconds"`
 
 	// MaxRepeatedFailures caps how many times CampaignState.RecordFailure
 	// may be called for a single task before the campaign stops. Zero means
 	// unlimited.
-	MaxRepeatedFailures int
+	MaxRepeatedFailures int `json:"maxRepeatedFailures"`
 
 	// MaxCost optionally caps spend against the campaign (tokens, currency
 	// or another caller-defined unit — whatever unit the caller accrues via
 	// CampaignState.RecordCost). Nil means cost is not budgeted.
-	MaxCost *float64
+	MaxCost *float64 `json:"maxCost"`
 }
 
 // validate rejects a negative MaxSteps, MaxDuration or MaxRepeatedFailures,

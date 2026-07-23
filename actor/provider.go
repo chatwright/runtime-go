@@ -90,23 +90,23 @@ func (k ProposalKind) String() string { return string(k) }
 // Proposal is a Provider's typed intent for the next action, plus its
 // free-text rationale. The loop validates and executes it — see Loop.
 type Proposal struct {
-	Kind ProposalKind
+	Kind ProposalKind `json:"kind"`
 
 	// Text is set for ProposeSendText: the text to send as the user.
-	Text string
+	Text string `json:"text"`
 
 	// ActionID is set for ProposeClick: an observe.AvailableAction.ID drawn
 	// from the Prompt's Observation.
-	ActionID string
+	ActionID string `json:"actionId"`
 	// ObservationSequence is the Observation.Sequence the proposal was
 	// chosen from. Required for ProposeClick (fed to observe.Engine.Validate
 	// as observe.ActionProposal.ObservationSequence); ignored otherwise.
-	ObservationSequence int64
+	ObservationSequence int64 `json:"observationSequence"`
 
 	// Rationale is free text explaining the choice — never private
 	// chain-of-thought, just enough for a developer or the campaign report
 	// to understand why the actor did this.
-	Rationale string
+	Rationale string `json:"rationale"`
 }
 
 // Usage reports what one Propose call cost: model identity, token counts,
@@ -114,9 +114,9 @@ type Proposal struct {
 // feeds it to goal.CampaignState.RecordCost so a configured
 // goal.Budgets.MaxCost is enforced.
 type Usage struct {
-	Model        string
-	InputTokens  int
-	OutputTokens int
-	Latency      time.Duration
-	Cost         *float64 `json:"cost,omitempty"`
+	Model        string        `json:"model"`
+	InputTokens  int           `json:"inputTokens"`
+	OutputTokens int           `json:"outputTokens"`
+	Latency      time.Duration `json:"latencyNanoseconds"`
+	Cost         *float64      `json:"cost,omitempty"`
 }
