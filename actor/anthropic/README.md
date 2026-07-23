@@ -5,13 +5,13 @@ API](https://platform.claude.com/docs/en/api/messages) to propose the next
 action for an in-flight campaign task. It composes with the frozen `actor`
 seam like any other `Provider` — see [`../provider.go`](../provider.go) for
 the interface it implements, and
-[`spec/plans/goal-driven-mvp-slice-2.md`](../../spec/plans/goal-driven-mvp-slice-2.md)
+[`spec/plans/goal-driven-mvp-slice-2.md`](https://github.com/chatwright/chatwright/blob/main/spec/plans/goal-driven-mvp-slice-2.md)
 for the design decisions this package is built to.
 
 ## Quick start
 
 ```go
-import "github.com/chatwright/chatwright/actor/anthropic"
+import "chatwright.dev/runtime/actor/anthropic"
 
 provider, err := anthropic.New(anthropic.Config{})
 // Config{} is enough: the API key comes from ANTHROPIC_API_KEY, the model

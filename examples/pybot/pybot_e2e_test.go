@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright"
+	"chatwright.dev/runtime/cw"
 )
 
 // readyTimeout bounds how long the test waits for the Python process to
@@ -23,7 +23,7 @@ const readyTimeout = 5 * time.Second
 
 // freeAddr reserves a free local TCP address by binding to port 0, reading
 // back what the OS assigned, then releasing it. Both the emulator (via
-// chatwright.WithListenAddr) and pybot (via the PORT env var) need their
+// cw.WithListenAddr) and pybot (via the PORT env var) need their
 // address decided up front, before either side is started.
 func freeAddr(t *testing.T) string {
 	t.Helper()
@@ -42,7 +42,7 @@ func freeAddr(t *testing.T) string {
 // configured entirely through the two environment variables it documents:
 // TELEGRAM_API_ROOT (the emulator's Bot API base URL) and PORT (the local
 // port its webhook listens on). Both addresses are decided by the caller
-// before this returns, which is exactly the seam chatwright.WithListenAddr
+// before this returns, which is exactly the seam cw.WithListenAddr
 // exists for: an externally-started, non-Go process needs its API base URL
 // in its environment before it starts, not read back from the harness
 // afterwards.
@@ -132,13 +132,13 @@ func TestPybotEndToEnd(t *testing.T) {
 	apiRoot := "http://" + apiAddr
 	startPybot(t, apiRoot, botAddr)
 
-	cw := chatwright.New(t, chatwright.WithListenAddr(apiAddr))
-	if got := cw.BotAPIURL(); got != apiRoot {
+	w := cw.New(t, cw.WithListenAddr(apiAddr))
+	if got := w.BotAPIURL(); got != apiRoot {
 		t.Fatalf("BotAPIURL() = %q, want %q", got, apiRoot)
 	}
-	cw.WebhookAt("http://" + botAddr + "/webhook")
+	w.WebhookAt("http://" + botAddr + "/webhook")
 
-	chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+	chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 
 	chat.SendText("Hi")
 	chat.ExpectBotMessage().

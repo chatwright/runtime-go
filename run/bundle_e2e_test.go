@@ -1,4 +1,4 @@
-package bundle_test
+package run_test
 
 import (
 	"bytes"
@@ -11,24 +11,27 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright/actor"
-	"github.com/chatwright/chatwright/bundle"
-	"github.com/chatwright/chatwright/campaign"
-	"github.com/chatwright/chatwright/examples/greetbot"
-	"github.com/chatwright/chatwright/goal"
-	"github.com/chatwright/chatwright/observe"
-	"github.com/chatwright/chatwright/platform"
-	"github.com/chatwright/chatwright/telegram"
+	"chatwright.dev/runtime/actor"
+	"chatwright.dev/runtime/campaign"
+	"chatwright.dev/runtime/examples/greetbot"
+	"chatwright.dev/runtime/goal"
+	"chatwright.dev/runtime/observe"
+	"chatwright.dev/runtime/platform"
+	"chatwright.dev/runtime/run"
+	"chatwright.dev/runtime/telegram"
+	"chatwright.dev/sdk"
 )
 
 // TestScriptedCampaignBundleAgainstGreetbotEndToEnd is a sibling of
 // campaign's frozen TestScriptedCampaignAgainstGreetbotEndToEnd that reuses
 // the same flow (ScriptedProvider against the real greetbot fixture over the
 // real Telegram emulator) and, once the campaign completes, assembles a real
-// bundle.Bundle from the run's actual pieces — the emulator's own
+// sdk.Bundle from the run's actual pieces — the emulator's own
 // platform.Emulator.Journal, actor.Loop.Observations, actor.Loop.Events and
-// the assembled campaign.Report, via bundle.SingleAIGoalRun — writes it to a
-// t.TempDir() file with bundle.Write, reads it back with bundle.Read, and
+// the assembled campaign.Report, via run.SingleAIGoalRun (moved here from
+// the pre-split bundle package; it wire-converts the runtime values
+// internally) — writes it to a
+// t.TempDir() file with sdk.Write, reads it back with sdk.Read, and
 // checks the result structurally rather than against a byte-exact golden
 // file: unlike TestBundleRoundTripIsDeterministic's hand-built Bundle, this
 // run's platform.JournalEntry/actor.LoopEvent timestamps come from the real
@@ -101,7 +104,10 @@ func TestScriptedCampaignBundleAgainstGreetbotEndToEnd(t *testing.T) {
 	}
 
 	events := loop.Events()
-	observations := bundle.SortObservations(loop.Observations())
+	// The raw retained-observation map, exactly as run.SingleAIGoalRun's
+	// input takes it — sorting (the old bundle package's SortObservations)
+	// now happens inside SingleAIGoalRun.
+	observations := loop.Observations()
 	if len(observations) == 0 {
 		t.Fatal("loop.Observations() is empty, want at least one retained observation (retention defaults on)")
 	}
@@ -112,24 +118,24 @@ func TestScriptedCampaignBundleAgainstGreetbotEndToEnd(t *testing.T) {
 	// conversation (attributed via user.ID), and the bot-under-test itself
 	// (attributed via telegram.EmulatedBotUserID, the id the emulator's
 	// single simulated bot always answers getMe/sends/edits as).
-	actors := []bundle.Actor{
+	actors := []sdk.Actor{
 		{
-			ID: "explorer", Type: bundle.ActorScripted, Name: user.FirstName,
-			PlatformIdentities: map[string]bundle.PlatformIdentity{
+			ID: "explorer", Type: sdk.ActorScripted, Name: user.FirstName,
+			PlatformIdentities: map[string]sdk.PlatformIdentity{
 				"telegram": {UserID: user.ID, FirstName: user.FirstName},
 			},
 		},
 		{
-			ID: "greetbot", Type: bundle.ActorBot, Name: "ChatwrightBot",
-			PlatformIdentities: map[string]bundle.PlatformIdentity{
+			ID: "greetbot", Type: sdk.ActorBot, Name: "ChatwrightBot",
+			PlatformIdentities: map[string]sdk.PlatformIdentity{
 				"telegram": {UserID: telegram.EmulatedBotUserID, FirstName: "ChatwrightBot"},
 			},
 		},
 	}
-	chats := []bundle.ChatJournal{{ChatID: chatID, Entries: entries}}
+	chats := []sdk.ChatJournal{run.WireJournal(chatID, entries)}
 
-	run := bundle.SingleAIGoalRun(bundle.SingleAIGoalRunInput{
-		RunID: "run-1", Platform: "telegram", EndpointProfile: bundle.EndpointProfilePlatformEmulated,
+	bundleRun := run.SingleAIGoalRun(run.SingleAIGoalRunInput{
+		RunID: "run-1", Platform: "telegram", EndpointProfile: sdk.EndpointProfilePlatformEmulated,
 		Actors: actors, Chats: chats,
 		PartID: "exploration", PartTitle: "Select a language and confirm the bot responds",
 		ActorID:      "explorer",
@@ -139,27 +145,27 @@ func TestScriptedCampaignBundleAgainstGreetbotEndToEnd(t *testing.T) {
 		Report:       report,
 	})
 
-	b := bundle.Bundle{
-		Format: bundle.FormatV1,
-		Metadata: bundle.Metadata{
+	b := sdk.Bundle{
+		Format: sdk.FormatV1,
+		Metadata: sdk.Metadata{
 			// Caller-supplied, not time.Now — see Metadata.CreatedAt's own
 			// doc comment; a fixed value keeps this one field deterministic
 			// even though other retained timestamps (the real emulator's
 			// journal, the real actor clock) are not.
 			CreatedAt:         time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC),
-			ChatwrightVersion: bundle.ModuleVersion(),
+			ChatwrightVersion: sdk.ModuleVersion(),
 		},
-		Runs: []bundle.Run{run},
+		Runs: []sdk.Run{bundleRun},
 	}
 
 	// Every retained observation is keyed by exactly the Sequence it
 	// carries, and every event's ObservationSequence resolves to one.
 	bySequence := make(map[int64]bool, len(observations))
-	for _, ro := range observations {
-		if ro.Observation.Sequence != ro.Sequence {
-			t.Fatalf("RetainedObservation.Sequence = %d, but Observation.Sequence = %d", ro.Sequence, ro.Observation.Sequence)
+	for seq, obs := range observations {
+		if obs.Sequence != seq {
+			t.Fatalf("Observations() key = %d, but Observation.Sequence = %d", seq, obs.Sequence)
 		}
-		bySequence[ro.Sequence] = true
+		bySequence[seq] = true
 	}
 	for _, e := range events {
 		if !bySequence[e.ObservationSequence] {
@@ -172,7 +178,7 @@ func TestScriptedCampaignBundleAgainstGreetbotEndToEnd(t *testing.T) {
 	// and again at a later Version (the in-place edit to "Howdy stranger").
 	versionsByMessage := make(map[int]map[int]string) // MessageID -> Version -> Text
 	for _, e := range chats[0].Entries {
-		if e.Direction != platform.DirectionBot || e.Kind != platform.JournalEntryMessage {
+		if e.Direction != sdk.DirectionBot || e.Kind != sdk.JournalEntryMessage {
 			continue
 		}
 		if versionsByMessage[e.MessageID] == nil {
@@ -214,7 +220,7 @@ func TestScriptedCampaignBundleAgainstGreetbotEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if err := bundle.Write(f, b); err != nil {
+	if err := sdk.Write(f, b); err != nil {
 		_ = f.Close()
 		t.Fatalf("Write() error = %v", err)
 	}
@@ -232,13 +238,13 @@ func TestScriptedCampaignBundleAgainstGreetbotEndToEnd(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 	defer readBack.Close()
-	decoded, err := bundle.Read(readBack)
+	decoded, err := sdk.Read(readBack)
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
 
-	if decoded.Format != bundle.FormatV1 {
-		t.Fatalf("decoded.Format = %q, want %q", decoded.Format, bundle.FormatV1)
+	if decoded.Format != sdk.FormatV1 {
+		t.Fatalf("decoded.Format = %q, want %q", decoded.Format, sdk.FormatV1)
 	}
 	if len(decoded.Runs) != 1 {
 		t.Fatalf("len(decoded.Runs) = %d, want 1", len(decoded.Runs))
@@ -247,7 +253,7 @@ func TestScriptedCampaignBundleAgainstGreetbotEndToEnd(t *testing.T) {
 	if len(decodedRun.Chats) != 1 || decodedRun.Chats[0].ChatID != chatID || len(decodedRun.Chats[0].Entries) != len(entries) {
 		t.Fatalf("decodedRun.Chats = %+v, want one chat (%d) with %d entries", decodedRun.Chats, chatID, len(entries))
 	}
-	if len(decodedRun.Parts) != 1 || decodedRun.Parts[0].Kind != bundle.PartKindAIGoal || decodedRun.Parts[0].AIGoal == nil {
+	if len(decodedRun.Parts) != 1 || decodedRun.Parts[0].Kind != sdk.PartKindAIGoal || decodedRun.Parts[0].AIGoal == nil {
 		t.Fatalf("decodedRun.Parts = %+v, want one ai-goal part with a populated AIGoal section", decodedRun.Parts)
 	}
 	aiGoal := decodedRun.Parts[0].AIGoal
@@ -260,15 +266,15 @@ func TestScriptedCampaignBundleAgainstGreetbotEndToEnd(t *testing.T) {
 	if aiGoal.Report.SchemaVersion != campaign.ReportSchemaVersion || aiGoal.Report.StopReason != string(goal.StopGoalComplete) {
 		t.Fatalf("decoded AIGoal.Report = %+v, want a completed report matching campaign.ReportSchemaVersion", aiGoal.Report)
 	}
-	if decodedRun.Platform != "telegram" || decodedRun.EndpointProfile != bundle.EndpointProfilePlatformEmulated {
-		t.Fatalf("decodedRun = %+v, want platform=telegram endpointProfile=%s", decodedRun, bundle.EndpointProfilePlatformEmulated)
+	if decodedRun.Platform != "telegram" || decodedRun.EndpointProfile != sdk.EndpointProfilePlatformEmulated {
+		t.Fatalf("decodedRun = %+v, want platform=telegram endpointProfile=%s", decodedRun, sdk.EndpointProfilePlatformEmulated)
 	}
 	if !decoded.Metadata.CreatedAt.Equal(b.Metadata.CreatedAt) {
 		t.Fatalf("decoded.Metadata.CreatedAt = %v, want %v", decoded.Metadata.CreatedAt, b.Metadata.CreatedAt)
 	}
 
 	var rewritten bytes.Buffer
-	if err := bundle.Write(&rewritten, decoded); err != nil {
+	if err := sdk.Write(&rewritten, decoded); err != nil {
 		t.Fatalf("Write(decoded) error = %v", err)
 	}
 	if string(written) != rewritten.String() {
@@ -276,13 +282,15 @@ func TestScriptedCampaignBundleAgainstGreetbotEndToEnd(t *testing.T) {
 	}
 
 	// A Bundle produced by this real campaign run — not the hand-built
-	// golden fixture — also validates against the committed schema. This is
-	// the e2e counterpart TestGoldenBundleValidatesAgainstSchema's own doc
-	// comment refers to: real timestamps, a real emulator-produced journal,
-	// and (unlike the golden's always-populated slices) the loop's own
-	// nil/empty slices wherever nothing occurred, exercising the schema's
-	// nullable-field handling (see internal/schemagen) against genuine
-	// output rather than only a curated fixture.
+	// golden fixture — also validates against the committed schema (read
+	// from the resolved chatwright.dev/sdk module itself — see
+	// sdkSchemaPath). This is the e2e counterpart the sdk repository's
+	// TestGoldenBundleValidatesAgainstSchema's own doc comment refers to:
+	// real timestamps, a real emulator-produced journal, and (unlike the
+	// golden's always-populated slices) the loop's own nil/empty slices
+	// wherever nothing occurred, exercising the schema's nullable-field
+	// handling (the sdk's internal/schemagen) against genuine output rather
+	// than only a curated fixture.
 	validateBundleFile(t, compileSchema(t), path)
 }
 
@@ -290,7 +298,7 @@ func TestScriptedCampaignBundleAgainstGreetbotEndToEnd(t *testing.T) {
 // resolves, via exactly one roster actor's telegram PlatformIdentity, to
 // that actor — the guarantee a player needs to attribute a transcript line
 // to whoever sent it.
-func assertAttributionResolves(t *testing.T, actors []bundle.Actor, entries []platform.JournalEntry) {
+func assertAttributionResolves(t *testing.T, actors []sdk.Actor, entries []platform.JournalEntry) {
 	t.Helper()
 
 	byTelegramID := make(map[int64][]string) // telegram user id -> actor ids claiming it
@@ -321,15 +329,15 @@ func assertAttributionResolves(t *testing.T, actors []bundle.Actor, entries []pl
 // assertRosterHasClientAndBot proves the roster carries both a client-side
 // actor (here, type ActorScripted for the ScriptedProvider that drove the
 // conversation) and the bot-under-test (type ActorBot).
-func assertRosterHasClientAndBot(t *testing.T, actors []bundle.Actor) {
+func assertRosterHasClientAndBot(t *testing.T, actors []sdk.Actor) {
 	t.Helper()
 
 	var hasScripted, hasBot bool
 	for _, a := range actors {
 		switch a.Type {
-		case bundle.ActorScripted:
+		case sdk.ActorScripted:
 			hasScripted = true
-		case bundle.ActorBot:
+		case sdk.ActorBot:
 			hasBot = true
 		}
 	}

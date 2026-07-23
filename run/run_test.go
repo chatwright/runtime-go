@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright"
-	"github.com/chatwright/chatwright/actor"
-	"github.com/chatwright/chatwright/bundle"
-	"github.com/chatwright/chatwright/goal"
-	"github.com/chatwright/chatwright/platform"
-	"github.com/chatwright/chatwright/run"
+	"chatwright.dev/runtime/actor"
+	"chatwright.dev/runtime/cw"
+	"chatwright.dev/runtime/goal"
+	"chatwright.dev/runtime/platform"
+	"chatwright.dev/runtime/run"
+	"chatwright.dev/sdk"
 )
 
 // fakeClock is an injectable, manually advanced clock — mirrors the same
@@ -179,11 +179,11 @@ func TestAIGoalThenDeterministicHandover(t *testing.T) {
 	})
 
 	sawHandover := false
-	source := chatwright.SourceReference{URI: "https://example.test/onboarding-followup.go", Revision: "abc123"}
-	fragment := chatwright.Fragment[onboardingFollowUpInput]{
-		Definition:  chatwright.Definition{Name: "onboarding-followup", Source: source},
+	source := cw.SourceReference{URI: "https://example.test/onboarding-followup.go", Revision: "abc123"}
+	fragment := cw.Fragment[onboardingFollowUpInput]{
+		Definition:  cw.Definition{Name: "onboarding-followup", Source: source},
 		CloneInputs: func(in onboardingFollowUpInput) onboardingFollowUpInput { return in },
-		Execute: func(ec *chatwright.ExecutionContext, _ onboardingFollowUpInput) error {
+		Execute: func(ec *cw.ExecutionContext, _ onboardingFollowUpInput) error {
 			entries, err := emu.Journal(chatID)
 			if err != nil {
 				return err
@@ -200,7 +200,7 @@ func TestAIGoalThenDeterministicHandover(t *testing.T) {
 			return emu.SubmitText(chatID, user, "deterministic-followup")
 		},
 	}
-	detPart := run.NewDeterministicPart("deterministic-followup", "Deterministic follow-up", "", fragment, chatwright.EffectiveInputs[onboardingFollowUpInput]{})
+	detPart := run.NewDeterministicPart("deterministic-followup", "Deterministic follow-up", "", fragment, cw.EffectiveInputs[onboardingFollowUpInput]{})
 
 	r := run.Run{
 		ID:          "ai-then-deterministic",
@@ -295,15 +295,15 @@ func TestRunCeilingAttributesReasonAndPart(t *testing.T) {
 	})
 
 	secondPartRan := false
-	fragment := chatwright.Fragment[struct{}]{
-		Definition:  chatwright.Definition{Name: "never-reached"},
+	fragment := cw.Fragment[struct{}]{
+		Definition:  cw.Definition{Name: "never-reached"},
 		CloneInputs: func(in struct{}) struct{} { return in },
-		Execute: func(*chatwright.ExecutionContext, struct{}) error {
+		Execute: func(*cw.ExecutionContext, struct{}) error {
 			secondPartRan = true
 			return nil
 		},
 	}
-	secondPart := run.NewDeterministicPart("never-reached", "", "", fragment, chatwright.EffectiveInputs[struct{}]{})
+	secondPart := run.NewDeterministicPart("never-reached", "", "", fragment, cw.EffectiveInputs[struct{}]{})
 
 	r := run.Run{
 		ID:          "ceiling-trip",
@@ -367,24 +367,24 @@ func TestRunCeilingAttributesReasonAndPart(t *testing.T) {
 // always fails with wantErr, plus a Part guaranteed to record whether it
 // ever ran — used by both failure-policy tests below.
 func buildFailingDeterministicPart(id string, policy run.FailurePolicy, wantErr error) run.Part {
-	fragment := chatwright.Fragment[struct{}]{
-		Definition:  chatwright.Definition{Name: id},
+	fragment := cw.Fragment[struct{}]{
+		Definition:  cw.Definition{Name: id},
 		CloneInputs: func(in struct{}) struct{} { return in },
-		Execute:     func(*chatwright.ExecutionContext, struct{}) error { return wantErr },
+		Execute:     func(*cw.ExecutionContext, struct{}) error { return wantErr },
 	}
-	return run.NewDeterministicPart(id, "", policy, fragment, chatwright.EffectiveInputs[struct{}]{})
+	return run.NewDeterministicPart(id, "", policy, fragment, cw.EffectiveInputs[struct{}]{})
 }
 
 func buildTrackingDeterministicPart(id string, ran *bool) run.Part {
-	fragment := chatwright.Fragment[struct{}]{
-		Definition:  chatwright.Definition{Name: id},
+	fragment := cw.Fragment[struct{}]{
+		Definition:  cw.Definition{Name: id},
 		CloneInputs: func(in struct{}) struct{} { return in },
-		Execute: func(*chatwright.ExecutionContext, struct{}) error {
+		Execute: func(*cw.ExecutionContext, struct{}) error {
 			*ran = true
 			return nil
 		},
 	}
-	return run.NewDeterministicPart(id, "", "", fragment, chatwright.EffectiveInputs[struct{}]{})
+	return run.NewDeterministicPart(id, "", "", fragment, cw.EffectiveInputs[struct{}]{})
 }
 
 // TestFailurePolicyAbortStopsRun proves the zero-value FailurePolicy ("")
@@ -468,9 +468,9 @@ func TestFailurePolicyCoverageGapMarksSubsequentParts(t *testing.T) {
 }
 
 // TestAssembleBundleRunOmitsSkippedParts proves AssembleBundleRun only turns
-// executed Parts into bundle.Part entries — a Part the Run never reached has
+// executed Parts into sdk.Part entries — a Part the Run never reached has
 // no journal evidence to bound and is therefore absent from the persisted
-// bundle.Run, per AssembleBundleRun's own doc comment.
+// sdk.Run, per AssembleBundleRun's own doc comment.
 func TestAssembleBundleRunOmitsSkippedParts(t *testing.T) {
 	const chatID = int64(1)
 	clock := newFakeClock()
@@ -492,8 +492,8 @@ func TestAssembleBundleRunOmitsSkippedParts(t *testing.T) {
 	}
 
 	bundleRun := run.AssembleBundleRun(run.AssembleBundleRunInput{
-		RunID: "assemble-omits-skipped", Platform: "fake", EndpointProfile: bundle.EndpointProfilePlatformEmulated,
-		Chats:  []bundle.ChatJournal{{ChatID: chatID}},
+		RunID: "assemble-omits-skipped", Platform: "fake", EndpointProfile: sdk.EndpointProfilePlatformEmulated,
+		Chats:  []sdk.ChatJournal{{ChatID: chatID}},
 		Result: result,
 	})
 	if len(bundleRun.Parts) != 1 || bundleRun.Parts[0].ID != "failing-part" {

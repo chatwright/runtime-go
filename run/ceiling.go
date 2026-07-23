@@ -3,7 +3,7 @@ package run
 import (
 	"time"
 
-	"github.com/chatwright/chatwright/goal"
+	"chatwright.dev/runtime/goal"
 )
 
 // RunCeiling optionally aggregates ai-goal usage across every Part in a Run,

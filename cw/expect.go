@@ -1,11 +1,11 @@
-package chatwright
+package cw
 
 import (
 	"regexp"
 	"strings"
 	"time"
 
-	"github.com/chatwright/chatwright/platform"
+	"chatwright.dev/runtime/platform"
 )
 
 // BotMessage is a fluent handle to a message the bot sent. Assertion methods

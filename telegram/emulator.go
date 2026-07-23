@@ -23,10 +23,10 @@ import (
 
 	"github.com/bots-go-framework/bots-api-telegram/tgbotapi"
 
-	"github.com/chatwright/chatwright/platform"
+	"chatwright.dev/runtime/platform"
 )
 
-// Platform returns the Telegram platform for use with chatwright.OnPlatform.
+// Platform returns the Telegram platform for use with cw.OnPlatform.
 func Platform() platform.Platform { return tgPlatform{} }
 
 type tgPlatform struct{}

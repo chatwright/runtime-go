@@ -6,9 +6,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/chatwright/chatwright/actor"
-	"github.com/chatwright/chatwright/campaign"
-	"github.com/chatwright/chatwright/goal"
+	"chatwright.dev/runtime/actor"
+	"chatwright.dev/runtime/campaign"
+	"chatwright.dev/runtime/goal"
 )
 
 // goldenReport builds a small, fully deterministic Report exercising every

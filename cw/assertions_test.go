@@ -1,4 +1,4 @@
-package chatwright_test
+package cw_test
 
 import (
 	"encoding/json"
@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright"
+	"chatwright.dev/runtime/cw"
 )
 
 // silentGreeter behaves like tgGreeter's default case, except it never replies
@@ -38,10 +38,10 @@ func silentGreeter(botAPIURL, token string) http.HandlerFunc {
 }
 
 func TestTextContainsAndMatches(t *testing.T) {
-	cw := chatwright.New(t)
-	cw.ServeWebhook(tgGreeter(cw.BotAPIURL(), "TEST:TOKEN"))
+	w := cw.New(t)
+	w.ServeWebhook(tgGreeter(w.BotAPIURL(), "TEST:TOKEN"))
 
-	chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+	chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 	chat.SendText("Hi")
 	chat.ExpectBotMessage().
 		Within(time.Second).
@@ -52,9 +52,9 @@ func TestTextContainsAndMatches(t *testing.T) {
 func TestTextMatches_InvalidPattern_FailsImmediately(t *testing.T) {
 	fake := newFakeTB()
 	failed, logs := fake.run(func(tb testing.TB) {
-		cw := chatwright.New(tb)
-		cw.ServeWebhook(tgGreeter(cw.BotAPIURL(), "TEST:TOKEN"))
-		chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+		w := cw.New(tb)
+		w.ServeWebhook(tgGreeter(w.BotAPIURL(), "TEST:TOKEN"))
+		chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 		chat.SendText("Hi")
 		chat.ExpectBotMessage().Within(time.Second).TextMatches("[")
 	})
@@ -67,9 +67,9 @@ func TestTextMatches_InvalidPattern_FailsImmediately(t *testing.T) {
 }
 
 func TestExpectNoMessage_NoReply_Passes(t *testing.T) {
-	cw := chatwright.New(t)
-	cw.ServeWebhook(silentGreeter(cw.BotAPIURL(), "TEST:TOKEN"))
-	chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+	w := cw.New(t)
+	w.ServeWebhook(silentGreeter(w.BotAPIURL(), "TEST:TOKEN"))
+	chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 	chat.SendText("/silent")
 	chat.ExpectNoMessage(100 * time.Millisecond)
 }
@@ -77,9 +77,9 @@ func TestExpectNoMessage_NoReply_Passes(t *testing.T) {
 func TestExpectNoMessage_UnexpectedReply_Fails(t *testing.T) {
 	fake := newFakeTB()
 	failed, logs := fake.run(func(tb testing.TB) {
-		cw := chatwright.New(tb)
-		cw.ServeWebhook(tgGreeter(cw.BotAPIURL(), "TEST:TOKEN"))
-		chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+		w := cw.New(tb)
+		w.ServeWebhook(tgGreeter(w.BotAPIURL(), "TEST:TOKEN"))
+		chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 		chat.SendText("Hi")
 		chat.ExpectNoMessage(time.Second)
 	})
@@ -92,12 +92,12 @@ func TestExpectNoMessage_UnexpectedReply_Fails(t *testing.T) {
 }
 
 func TestPrivateChat_HandleAliasing(t *testing.T) {
-	cw := chatwright.New(t)
-	cw.ServeWebhook(tgGreeter(cw.BotAPIURL(), "TEST:TOKEN"))
+	w := cw.New(t)
+	w.ServeWebhook(tgGreeter(w.BotAPIURL(), "TEST:TOKEN"))
 
-	user := chatwright.User{ID: "alice", FirstName: "Alice"}
-	chat1 := cw.PrivateChat(user)
-	chat2 := cw.PrivateChat(user)
+	user := cw.User{ID: "alice", FirstName: "Alice"}
+	chat1 := w.PrivateChat(user)
+	chat2 := w.PrivateChat(user)
 	if chat1 != chat2 {
 		t.Fatalf("PrivateChat returned different handles for the same user; want the same cached *Chat")
 	}
@@ -112,9 +112,9 @@ func TestPrivateChat_HandleAliasing(t *testing.T) {
 func TestBotMessage_NeverResolved_FailsAtCleanup(t *testing.T) {
 	fake := newFakeTB()
 	failed, logs := fake.run(func(tb testing.TB) {
-		cw := chatwright.New(tb)
-		cw.ServeWebhook(tgGreeter(cw.BotAPIURL(), "TEST:TOKEN"))
-		chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+		w := cw.New(tb)
+		w.ServeWebhook(tgGreeter(w.BotAPIURL(), "TEST:TOKEN"))
+		chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 		chat.SendText("Hi")
 		chat.ExpectBotMessage() // never asserted on — must fail at cleanup
 	})
@@ -129,9 +129,9 @@ func TestBotMessage_NeverResolved_FailsAtCleanup(t *testing.T) {
 func TestWithin_AfterResolved_FailsImmediately(t *testing.T) {
 	fake := newFakeTB()
 	failed, logs := fake.run(func(tb testing.TB) {
-		cw := chatwright.New(tb)
-		cw.ServeWebhook(tgGreeter(cw.BotAPIURL(), "TEST:TOKEN"))
-		chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+		w := cw.New(tb)
+		w.ServeWebhook(tgGreeter(w.BotAPIURL(), "TEST:TOKEN"))
+		chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 		chat.SendText("Hi")
 		msg := chat.ExpectBotMessage().Within(time.Second)
 		msg.Text("Howdy stranger")

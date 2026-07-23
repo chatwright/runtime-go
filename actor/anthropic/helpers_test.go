@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright/actor"
-	"github.com/chatwright/chatwright/actor/anthropic"
-	"github.com/chatwright/chatwright/observe"
+	"chatwright.dev/runtime/actor"
+	"chatwright.dev/runtime/actor/anthropic"
+	"chatwright.dev/runtime/observe"
 )
 
 // roundTripFunc adapts a function to http.RoundTripper, the same way

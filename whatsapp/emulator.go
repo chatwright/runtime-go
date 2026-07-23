@@ -22,10 +22,10 @@ import (
 
 	"github.com/bots-go-framework/bots-api-whatsapp/wabotapi"
 
-	"github.com/chatwright/chatwright/platform"
+	"chatwright.dev/runtime/platform"
 )
 
-// Platform returns the WhatsApp platform for use with chatwright.OnPlatform.
+// Platform returns the WhatsApp platform for use with cw.OnPlatform.
 func Platform() platform.Platform { return waPlatform{} }
 
 type waPlatform struct{}

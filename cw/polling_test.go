@@ -1,4 +1,4 @@
-package chatwright_test
+package cw_test
 
 import (
 	"encoding/json"
@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright"
-	"github.com/chatwright/chatwright/whatsapp"
+	"chatwright.dev/runtime/cw"
+	"chatwright.dev/runtime/whatsapp"
 )
 
 // runPollingGreeter starts a background goroutine that long-polls getUpdates
@@ -73,10 +73,10 @@ func runPollingGreeter(t *testing.T, botAPIURL, token string) {
 // public test API is unchanged: SendText/ExpectBotMessage don't know or care
 // which delivery strategy is in play.
 func TestTelegramPollingBot(t *testing.T) {
-	cw := chatwright.New(t) // no ServeWebhook/WebhookAt: this bot polls instead
-	runPollingGreeter(t, cw.BotAPIURL(), "TEST:TOKEN")
+	w := cw.New(t) // no ServeWebhook/WebhookAt: this bot polls instead
+	runPollingGreeter(t, w.BotAPIURL(), "TEST:TOKEN")
 
-	chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+	chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 	chat.SendText("Hi")
 	chat.ExpectBotMessage().Within(3 * time.Second).Text("Howdy stranger")
 
@@ -93,9 +93,9 @@ func TestTelegramPollingBot(t *testing.T) {
 func TestWhatsApp_SubmitWithoutWebhook_Fails(t *testing.T) {
 	fake := newFakeTB()
 	failed, logs := fake.run(func(tb testing.TB) {
-		cw := chatwright.New(tb, chatwright.OnPlatform(whatsapp.Platform()))
+		w := cw.New(tb, cw.OnPlatform(whatsapp.Platform()))
 		// Deliberately no ServeWebhook/WebhookAt call.
-		chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+		chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 		chat.SendText("Hi")
 	})
 	if !failed {

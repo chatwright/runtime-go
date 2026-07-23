@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright"
-	"github.com/chatwright/chatwright/examples/greetbot"
+	"chatwright.dev/runtime/cw"
+	"chatwright.dev/runtime/examples/greetbot"
 )
 
 // TestGreetBotEndToEnd runs greetScenario against a full end-to-end setup:
@@ -30,7 +30,7 @@ func TestGreetBotEndToEnd(t *testing.T) {
 
 // greetScenario is the platform-neutral happy path: greet, then inspect
 // /start's language options.
-func greetScenario(chat *chatwright.Chat) {
+func greetScenario(chat *cw.Chat) {
 	chat.SendText("Hi")
 	chat.ExpectBotMessage().
 		Within(time.Second).
@@ -89,7 +89,7 @@ func TestGreetBotTime(t *testing.T) {
 
 // timeScenario validates /time in isolation: the bot must return exactly what
 // its clock says, formatted the way greetbot.FormatTime defines.
-func timeScenario(chat *chatwright.Chat, wantNow time.Time) {
+func timeScenario(chat *cw.Chat, wantNow time.Time) {
 	chat.SendText("/time")
 	chat.ExpectBotMessage().
 		Within(time.Second).
@@ -98,12 +98,12 @@ func timeScenario(chat *chatwright.Chat, wantNow time.Time) {
 
 // startGreetBot boots Chatwright, runs a real greetbot (configured with opts) on
 // its own TCP listener, and connects the scenario to it via WebhookAt.
-func startGreetBot(t *testing.T, opts ...greetbot.Option) (*chatwright.Chatwright, *chatwright.Chat) {
+func startGreetBot(t *testing.T, opts ...greetbot.Option) (*cw.Chatwright, *cw.Chat) {
 	t.Helper()
-	cw := chatwright.New(t) // Telegram is the default platform
+	w := cw.New(t) // Telegram is the default platform
 
 	const token = "TEST:TOKEN"
-	bot := greetbot.New(cw.BotAPIURL(), token, opts...)
+	bot := greetbot.New(w.BotAPIURL(), token, opts...)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -119,8 +119,8 @@ func startGreetBot(t *testing.T, opts ...greetbot.Option) (*chatwright.Chatwrigh
 		_ = srv.Shutdown(ctx)
 	})
 
-	cw.WebhookAt("http://" + ln.Addr().String() + "/webhook")
+	w.WebhookAt("http://" + ln.Addr().String() + "/webhook")
 
-	chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
-	return cw, chat
+	chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
+	return w, chat
 }

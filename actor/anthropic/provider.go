@@ -28,7 +28,7 @@ import (
 	sdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 
-	"github.com/chatwright/chatwright/actor"
+	"chatwright.dev/runtime/actor"
 )
 
 // DefaultModel is the default model this package proposes with:

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chatwright/chatwright/platform"
+	"chatwright.dev/runtime/platform"
 )
 
 // fakeChat is a minimal, fully controlled stand-in for a live

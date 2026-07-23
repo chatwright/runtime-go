@@ -94,9 +94,9 @@ type JournalEntry struct {
 	// entry, or the bot's own id for a bot-originated entry. It is 0 when
 	// no identity is available (e.g. a pure method-call record with no
 	// resolvable sender) — a Platform never invents an identity it does not
-	// actually know. This is what lets a run-bundle roster (see the bundle
-	// package's Actor.PlatformIdentities) attribute every journal entry to
-	// whoever produced it.
+	// actually know. This is what lets a run-bundle roster (see
+	// chatwright.dev/sdk's Actor.PlatformIdentities) attribute every journal
+	// entry to whoever produced it.
 	FromID int64 `json:"fromId"`
 }
 
@@ -181,7 +181,7 @@ type Platform interface {
 // language, since Chatwright only speaks HTTP — that must be configured
 // with the emulator's API base URL in its environment before that process
 // starts, which means the address has to be decided up front rather than
-// read back from the emulator afterwards. chatwright.WithListenAddr uses
+// read back from the emulator afterwards. cw.WithListenAddr uses
 // this interface; New fails the test if a listen address is configured for
 // a platform that doesn't implement it.
 type AddrPlatform interface {

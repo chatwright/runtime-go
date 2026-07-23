@@ -171,12 +171,12 @@ type Expectation func(rows []Row) error
 // data-state assertion: the exact DTQL query and parameters, the holder it
 // ran against, its pass/fail outcome, and a bounded, redacted, normalised
 // preview of the rows it returned. Every exported field carries an explicit
-// lower-camel-case `json` tag — Evidence reaches a run bundle (via
-// bundle.AIGoalSection.Evidence) and the whole run-bundle wire is
-// uniformly camelCase, so this package's stable shape is the tagged one,
-// not Go's default (exported-name) encoding. branching.Evidence and
-// goal.CampaignSnapshot are untagged still, but neither reaches the bundle
-// wire this package does.
+// lower-camel-case `json` tag — Evidence reaches a run bundle (as
+// chatwright.dev/sdk's DataStateEvidence, via AIGoalSection.Evidence) and
+// the whole run-bundle wire is uniformly camelCase, so this package's stable
+// shape is the tagged one, not Go's default (exported-name) encoding.
+// branching.Evidence and goal.CampaignSnapshot are untagged still, but
+// neither reaches the bundle wire this package does.
 type Evidence struct {
 	// Name is the triggering Assertion.Name, correlating this evidence to
 	// the message, checkpoint or branch that attached it.

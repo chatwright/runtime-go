@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/chatwright/chatwright/platform"
+	"chatwright.dev/runtime/platform"
 )
 
 // Journaler is the read seam an Engine projects Observations from — the

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/chatwright/chatwright/actor"
-	"github.com/chatwright/chatwright/observe"
+	"chatwright.dev/runtime/actor"
+	"chatwright.dev/runtime/observe"
 )
 
 // promptContractVersion tags the shape renderPrompt produces and the

@@ -1,17 +1,17 @@
-package chatwright
+package cw
 
 import (
 	"net/http"
 	"time"
 
-	"github.com/chatwright/chatwright/platform"
+	"chatwright.dev/runtime/platform"
 )
 
 // Option configures a Chatwright harness at construction time.
 type Option func(*Chatwright)
 
 // OnPlatform selects the platform a scenario runs against, e.g.
-// chatwright.OnPlatform(whatsapp.Platform()). Defaults to Telegram.
+// cw.OnPlatform(whatsapp.Platform()). Defaults to Telegram.
 func OnPlatform(p platform.Platform) Option {
 	return func(cw *Chatwright) { cw.platform = p }
 }

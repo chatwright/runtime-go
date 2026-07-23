@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chatwright/chatwright/actor"
-	"github.com/chatwright/chatwright/observe"
+	"chatwright.dev/runtime/actor"
+	"chatwright.dev/runtime/observe"
 )
 
 // TestReplayModeFailsOnCacheMiss proves a ModeReplay CassetteProvider never

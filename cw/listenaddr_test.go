@@ -1,12 +1,12 @@
-package chatwright_test
+package cw_test
 
 import (
 	"net"
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright"
-	"github.com/chatwright/chatwright/whatsapp"
+	"chatwright.dev/runtime/cw"
+	"chatwright.dev/runtime/whatsapp"
 )
 
 // freeAddr reserves a free local TCP address by binding to port 0, reading
@@ -32,13 +32,13 @@ func freeAddr(t *testing.T) string {
 func TestWithListenAddr_BindsRequestedAddress(t *testing.T) {
 	addr := freeAddr(t)
 
-	cw := chatwright.New(t, chatwright.WithListenAddr(addr))
-	if got, want := cw.BotAPIURL(), "http://"+addr; got != want {
+	w := cw.New(t, cw.WithListenAddr(addr))
+	if got, want := w.BotAPIURL(), "http://"+addr; got != want {
 		t.Fatalf("BotAPIURL() = %q, want %q", got, want)
 	}
 
-	cw.ServeWebhook(tgGreeter(cw.BotAPIURL(), "TEST:TOKEN"))
-	chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+	w.ServeWebhook(tgGreeter(w.BotAPIURL(), "TEST:TOKEN"))
+	chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 	chat.SendText("Hi")
 	chat.ExpectBotMessage().Within(time.Second).Text("Howdy stranger")
 }
@@ -51,7 +51,7 @@ func TestWithListenAddr_UnsupportedPlatform_FailsClearly(t *testing.T) {
 
 	fake := newFakeTB()
 	failed, logs := fake.run(func(tb testing.TB) {
-		chatwright.New(tb, chatwright.OnPlatform(whatsapp.Platform()), chatwright.WithListenAddr(addr))
+		cw.New(tb, cw.OnPlatform(whatsapp.Platform()), cw.WithListenAddr(addr))
 	})
 	if !failed {
 		t.Fatalf("expected New to fail the test for a platform without AddrPlatform support")
@@ -74,7 +74,7 @@ func TestWithListenAddr_AddressInUse_FailsClearly(t *testing.T) {
 
 	fake := newFakeTB()
 	failed, logs := fake.run(func(tb testing.TB) {
-		chatwright.New(tb, chatwright.WithListenAddr(addr))
+		cw.New(tb, cw.WithListenAddr(addr))
 	})
 	if !failed {
 		t.Fatalf("expected New to fail the test when the requested address is already in use")

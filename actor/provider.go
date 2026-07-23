@@ -16,7 +16,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/chatwright/chatwright/observe"
+	"chatwright.dev/runtime/observe"
 )
 
 // Provider proposes the next action for an in-flight campaign task. It is a

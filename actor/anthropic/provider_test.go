@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chatwright/chatwright/actor"
-	"github.com/chatwright/chatwright/actor/anthropic"
+	"chatwright.dev/runtime/actor"
+	"chatwright.dev/runtime/actor/anthropic"
 )
 
 func TestNew_MissingAPIKey(t *testing.T) {

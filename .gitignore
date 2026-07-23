@@ -1,0 +1,18 @@
+# Go binaries & artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+/bin/
+*.test
+*.out
+coverage.txt
+coverage.html
+go.work
+go.work.sum
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp

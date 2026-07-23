@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/chatwright/chatwright/actor"
-	"github.com/chatwright/chatwright/actor/anthropic"
+	"chatwright.dev/runtime/actor"
+	"chatwright.dev/runtime/actor/anthropic"
 )
 
 // TestCassetteComposition proves a Provider composes with

@@ -3,7 +3,7 @@ package actor
 import (
 	"time"
 
-	"github.com/chatwright/chatwright/observe"
+	"chatwright.dev/runtime/observe"
 )
 
 // LoopEvent is one loop iteration's complete structured record: what was

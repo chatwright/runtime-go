@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright/actor"
-	"github.com/chatwright/chatwright/goal"
-	"github.com/chatwright/chatwright/observe"
-	"github.com/chatwright/chatwright/platform"
+	"chatwright.dev/runtime/actor"
+	"chatwright.dev/runtime/goal"
+	"chatwright.dev/runtime/observe"
+	"chatwright.dev/runtime/platform"
 )
 
 // fakeClock is an injectable, manually advanced clock — mirrors goal

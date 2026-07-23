@@ -1,0 +1,44 @@
+name: Go CI
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v[0-9]+\.[0-9]+\.[0-9]+'
+    paths:
+      - '.github/workflows/**.yml'
+      - '**/go.*'
+      - '**/*.go'
+  pull_request:
+    branches:
+      - '**'
+    paths:
+      - '.github/workflows/**.yml'
+      - '**/go.*'
+      - '**/*.go'
+
+jobs:
+
+  strongo_workflow:
+    uses: strongo/cicd/.github/workflows/workflow.yml@main
+    permissions:
+      contents: write
+    secrets:
+      # No private Go modules — the built-in token is sufficient.
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    with:
+      code_coverage: true
+      # Releases are deliberate pre-1.0 (the standard repository's
+      # docs/release-process.md): manual annotated tags + CHANGELOG, not
+      # auto-bumped patches.
+      disable-version-bumping: true
+      # Version policy (the standard repository's docs/release-process.md
+      # "Version policy"): stay on v0.x, never auto-bump major from a
+      # `feat!:`/`BREAKING CHANGE:` marker. Version bumping is fully
+      # disabled above, so this input is a no-op today — set explicitly so
+      # the policy still holds if this repo ever adopts the shared
+      # workflow's auto-tag path. When false (the strongo/cicd default too),
+      # a disallowed major bump is capped to a minor bump with a warning,
+      # never a failed run.
+      allow_major_version_bump: false

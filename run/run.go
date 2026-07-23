@@ -7,24 +7,26 @@
 //
 // A Run never duplicates journal content or re-runs mechanics that already
 // exist elsewhere in this module: a deterministic Part executes an existing
-// chatwright.Fragment via chatwright.InvokeFragment (provenance retained —
+// cw.Fragment via cw.InvokeFragment (provenance retained —
 // see DeterministicOutcome); an ai-goal Part drives goal.CampaignState and
 // actor.Loop exactly as the frozen campaign/bundle end-to-end tests do,
 // scoped to that Part's own goal.Goal and goal.Budgets. Run.Execute captures
 // each Part's journal boundary (per chat: first entry index + entry count)
 // by snapshotting platform.Emulator.Journal before and after the Part runs
 // — the "platform Journal seam" hybrid-runs.md calls for — and
-// AssembleBundleRun (see bundle.go) turns the result into a bundle.Run,
-// extending bundle.SingleAIGoalRun's single-part mapping to however many
-// Parts actually ran. A plain campaign is exactly a Run with one ai-goal
-// Part, so the campaign execution path is fully expressible through this
-// same layer, per hybrid-runs.md's MVP scope.
+// AssembleBundleRun (see bundle.go) turns the result into a sdk.Run,
+// extending SingleAIGoalRun's single-part mapping to however many Parts
+// actually ran, converting this runtime's internal types to the sdk's wire
+// shapes along the way (see wire.go — the sdk owns every wire shape). A
+// plain campaign is exactly a Run with one ai-goal Part, so the campaign
+// execution path is fully expressible through this same layer, per
+// hybrid-runs.md's MVP scope.
 //
 // Every timestamp this package's own runtime state needs — the run
 // ceiling's elapsed-duration check, and each ai-goal Part's
 // goal.CampaignState/actor.Loop clock — comes from Environment.Now, never
 // time.Now, mirroring the rest of this module's injected-clock convention
-// (goal.NewCampaignState, actor.Config.Now, bundle.Metadata.CreatedAt).
+// (goal.NewCampaignState, actor.Config.Now, sdk.Metadata.CreatedAt).
 package run
 
 import (
@@ -33,13 +35,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/chatwright/chatwright"
-	"github.com/chatwright/chatwright/actor"
-	"github.com/chatwright/chatwright/bundle"
-	"github.com/chatwright/chatwright/campaign"
-	"github.com/chatwright/chatwright/goal"
-	"github.com/chatwright/chatwright/observe"
-	"github.com/chatwright/chatwright/platform"
+	"chatwright.dev/runtime/actor"
+	"chatwright.dev/runtime/campaign"
+	"chatwright.dev/runtime/cw"
+	"chatwright.dev/runtime/goal"
+	"chatwright.dev/runtime/observe"
+	"chatwright.dev/runtime/platform"
+	"chatwright.dev/sdk"
 )
 
 // ErrNilEmulator means Environment.Emulator was nil.
@@ -58,10 +60,10 @@ var ErrNoChatIDs = errors.New("run: Environment.ChatIDs is empty")
 // environment, one cast, one continuous journal" spec/ideas/hybrid-runs.md
 // requires. ChatIDs names every chat this run's journal spans; Run.Execute
 // snapshots each of them (via Emulator.Journal) immediately before and after
-// every Part to compute that Part's bundle.JournalBoundary (see
+// every Part to compute that Part's sdk.JournalBoundary (see
 // diffBoundary), so a chat a given Part never touches at all contributes no
 // boundary entry for that Part. A Run never infers ChatIDs on its own —
-// deterministic Parts execute an opaque chatwright.Fragment closure this
+// deterministic Parts execute an opaque cw.Fragment closure this
 // package cannot introspect, so there is no way to discover which chats it
 // touched short of the caller declaring them up front.
 type Environment struct {
@@ -91,7 +93,7 @@ const (
 	// tripped inside it.
 	PartCompleted PartStatus = "completed"
 	// PartFailed: the Part executed but its own mechanism reported a
-	// failure — a deterministic Part's chatwright.Fragment.Execute returned
+	// failure — a deterministic Part's cw.Fragment.Execute returned
 	// a non-nil error, or an ai-goal Part's actor.Loop.RunTask returned an
 	// unexpected error. See PartOutcome.Err.
 	PartFailed PartStatus = "failed"
@@ -158,15 +160,15 @@ func (p FailurePolicy) effective() FailurePolicy {
 // error for it rather than silently doing nothing.
 type Part struct {
 	// ID is caller-supplied and only needs to be unique within its Run —
-	// mirrors bundle.Part.ID, since AssembleBundleRun copies it there
+	// mirrors sdk.Part.ID, since AssembleBundleRun copies it there
 	// verbatim for every Part that actually executed.
 	ID string
-	// Title is an optional human-readable label — see bundle.Part.Title.
+	// Title is an optional human-readable label — see sdk.Part.Title.
 	Title string
-	// Kind discriminates this Part's payload — bundle.PartKindDeterministic
-	// or bundle.PartKindAIGoal, reusing the bundle package's own vocabulary
-	// rather than a parallel enum.
-	Kind bundle.PartKind
+	// Kind discriminates this Part's payload — sdk.PartKindDeterministic
+	// or sdk.PartKindAIGoal, reusing the sdk's own wire vocabulary rather
+	// than a parallel enum.
+	Kind sdk.PartKind
 	// FailurePolicy declares what happens to the rest of the Run if this
 	// Part fails — see FailurePolicy.
 	FailurePolicy FailurePolicy
@@ -179,10 +181,10 @@ type Part struct {
 // canonical "run" of docs/glossary.md. Execute runs every Part in order
 // (see Execute) and returns a Result describing what happened to each one.
 type Run struct {
-	// ID identifies this Run — required (chatwright.NewExecutionContext,
+	// ID identifies this Run — required (cw.NewExecutionContext,
 	// which threads deterministic-Part provenance across the whole Run,
 	// needs a non-empty root path/definition name) and, conventionally, the
-	// same value later given to bundle.Run.ID when assembling evidence.
+	// same value later given to sdk.Run.ID when assembling evidence.
 	ID string
 	// Environment is the one platform.Emulator (plus its declared chat IDs
 	// and clock) every Part executes over — see Environment.
@@ -205,7 +207,7 @@ type Result struct {
 	RunID string
 	// Parts is every Part that actually executed (PartCompleted,
 	// PartFailed or PartCeilingStopped — see PartStatus), in the order it
-	// ran. AssembleBundleRun turns this directly into a bundle.Run's Parts.
+	// ran. AssembleBundleRun turns this directly into a sdk.Run's Parts.
 	Parts []PartOutcome
 	// Skipped is every Part the Run never reached (PartAborted or
 	// PartCoverageGap), in declared order, once execution stopped short.
@@ -227,7 +229,7 @@ type SkippedPart struct {
 type PartOutcome struct {
 	PartID string
 	Title  string
-	Kind   bundle.PartKind
+	Kind   sdk.PartKind
 	Status PartStatus
 	// Err is set when Status is PartFailed: the deterministic Fragment's
 	// own error, or the ai-goal Loop.RunTask's own error.
@@ -235,23 +237,23 @@ type PartOutcome struct {
 	// Boundary is this Part's slice of the run-level journal, computed by
 	// diffBoundary from Environment snapshots taken immediately before and
 	// after the Part ran.
-	Boundary bundle.JournalBoundary
+	Boundary sdk.JournalBoundary
 	// Deterministic is set for a deterministic Part: the retained
-	// chatwright.FragmentInvocation provenance (definition, steps,
+	// cw.FragmentInvocation provenance (definition, steps,
 	// checkpoints, branches, failures) — see DeterministicOutcome.
 	Deterministic *DeterministicOutcome
 	// AIGoal is set for an ai-goal Part that at least started running (any
 	// status except one the Run never reached): the same shape
-	// bundle.AIGoalSection carries, ready to attach to a bundle.Part
+	// sdk.AIGoalSection carries, ready to attach to a sdk.Part
 	// verbatim.
-	AIGoal *bundle.AIGoalSection
+	AIGoal *sdk.AIGoalSection
 	// CeilingTrip is set exactly on the one PartOutcome where Run.Ceiling
 	// tripped (Status will be PartCeilingStopped), nil otherwise.
 	CeilingTrip *CeilingTrip
 }
 
 // Execute runs every declared Part in order over r.Environment: deterministic
-// Parts via chatwright.InvokeFragment, ai-goal Parts via goal.CampaignState
+// Parts via cw.InvokeFragment, ai-goal Parts via goal.CampaignState
 // and actor.Loop, in the same sequence and against the same shared journal —
 // see the package doc comment. It stops the Run early (recording every
 // remaining Part in Result.Skipped) when a Part fails and its FailurePolicy
@@ -274,7 +276,7 @@ func (r Run) Execute(ctx context.Context) (Result, error) {
 		return result, err
 	}
 
-	root, err := chatwright.NewExecutionContext(chatwright.Definition{Name: r.ID}, r.ID)
+	root, err := cw.NewExecutionContext(cw.Definition{Name: r.ID}, r.ID)
 	if err != nil {
 		return result, fmt.Errorf("run: %w", err)
 	}
@@ -295,9 +297,9 @@ func (r Run) Execute(ctx context.Context) (Result, error) {
 
 		var outcome PartOutcome
 		switch part.Kind {
-		case bundle.PartKindDeterministic:
+		case sdk.PartKindDeterministic:
 			outcome, err = r.runDeterministic(root, part)
-		case bundle.PartKindAIGoal:
+		case sdk.PartKindAIGoal:
 			outcome, err = r.runAIGoal(ctx, part, tracker)
 		default:
 			err = fmt.Errorf("run: part %q has unknown kind %q", part.ID, part.Kind)
@@ -363,7 +365,7 @@ func (r Run) validate() error {
 		}
 		seenIDs[part.ID] = true
 
-		if part.Kind == bundle.PartKindAIGoal && part.aiGoal != nil && !declared[part.aiGoal.cfg.ChatID] {
+		if part.Kind == sdk.PartKindAIGoal && part.aiGoal != nil && !declared[part.aiGoal.cfg.ChatID] {
 			return fmt.Errorf("run: part %q targets chat %d, which Environment.ChatIDs does not declare", part.ID, part.aiGoal.cfg.ChatID)
 		}
 	}
@@ -372,7 +374,7 @@ func (r Run) validate() error {
 
 // snapshotCounts reads every declared chat's current journal length from
 // r.Environment.Emulator — the "before"/"after" snapshot diffBoundary turns
-// into a Part's bundle.JournalBoundary.
+// into a Part's sdk.JournalBoundary.
 func (r Run) snapshotCounts() (map[int64]int, error) {
 	counts := make(map[int64]int, len(r.Environment.ChatIDs))
 	for _, id := range r.Environment.ChatIDs {
@@ -386,28 +388,28 @@ func (r Run) snapshotCounts() (map[int64]int, error) {
 }
 
 // diffBoundary turns a before/after snapshot pair into the
-// bundle.JournalBoundary the Part between them covers, in chatIDs' declared
+// sdk.JournalBoundary the Part between them covers, in chatIDs' declared
 // order. A chat with no new entries during the Part contributes no
 // ChatBoundary at all — JournalBoundary.Chats only ever names chats the Part
 // actually produced journal content in.
-func diffBoundary(chatIDs []int64, before, after map[int64]int) bundle.JournalBoundary {
-	boundary := bundle.JournalBoundary{}
+func diffBoundary(chatIDs []int64, before, after map[int64]int) sdk.JournalBoundary {
+	boundary := sdk.JournalBoundary{}
 	for _, id := range chatIDs {
 		count := after[id] - before[id]
 		if count <= 0 {
 			continue
 		}
-		boundary.Chats = append(boundary.Chats, bundle.ChatBoundary{ChatID: id, FirstEntry: before[id], EntryCount: count})
+		boundary.Chats = append(boundary.Chats, sdk.ChatBoundary{ChatID: id, FirstEntry: before[id], EntryCount: count})
 	}
 	return boundary
 }
 
-// runDeterministic executes part's chatwright.Fragment via
-// chatwright.InvokeFragment against root, retaining its provenance in
+// runDeterministic executes part's cw.Fragment via
+// cw.InvokeFragment against root, retaining its provenance in
 // DeterministicOutcome. A Fragment error is reported as PartFailed, never as
 // runDeterministic's own returned error — see Execute's doc comment on what
 // that error is reserved for.
-func (r Run) runDeterministic(root *chatwright.ExecutionContext, part Part) (PartOutcome, error) {
+func (r Run) runDeterministic(root *cw.ExecutionContext, part Part) (PartOutcome, error) {
 	outcome := PartOutcome{PartID: part.ID, Title: part.Title, Kind: part.Kind}
 	if part.deterministic == nil {
 		return outcome, fmt.Errorf("run: deterministic part %q declares no fragment (build it with NewDeterministicPart)", part.ID)
@@ -494,20 +496,22 @@ func (r Run) runAIGoal(ctx context.Context, part Part, tracker *ceilingTracker) 
 	return outcome, nil
 }
 
-// buildAIGoalSection assembles the bundle.AIGoalSection a Part's outcome
+// buildAIGoalSection assembles the sdk.AIGoalSection a Part's outcome
 // carries — the same pieces (Goal, actor id, events, retained observations,
 // campaign.Assemble's Report) the frozen bundle end-to-end test assembles by
 // hand, gathered here once so runAIGoal never duplicates it across its three
-// return points (clean completion, mid-task error, ceiling trip).
-func buildAIGoalSection(spec *aiGoalSpec, campaignState *goal.CampaignState, loop *actor.Loop) *bundle.AIGoalSection {
+// return points (clean completion, mid-task error, ceiling trip). The
+// runtime values are converted to the sdk's wire shapes at exactly this
+// packing point — see wire.go; the sdk owns every wire shape.
+func buildAIGoalSection(spec *aiGoalSpec, campaignState *goal.CampaignState, loop *actor.Loop) *sdk.AIGoalSection {
 	events := loop.Events()
 	report := campaign.Assemble(campaign.AssembleInput{Goal: spec.goalDef, Campaign: campaignState.Snapshot(), Events: events})
-	return &bundle.AIGoalSection{
-		Goal:         spec.goalDef,
+	return &sdk.AIGoalSection{
+		Goal:         wireGoal(spec.goalDef),
 		ActorID:      spec.actorID,
-		Events:       events,
-		Observations: bundle.SortObservations(loop.Observations()),
-		Report:       report,
+		Events:       wireLoopEvents(events),
+		Observations: wireRetainedObservations(loop.Observations()),
+		Report:       wireReport(report),
 	}
 }
 

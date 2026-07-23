@@ -1,4 +1,4 @@
-package chatwright_test
+package cw_test
 
 import (
 	"bytes"
@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright"
-	"github.com/chatwright/chatwright/whatsapp"
+	"chatwright.dev/runtime/cw"
+	"chatwright.dev/runtime/whatsapp"
 )
 
 // editingGreeter is a minimal Telegram bot used to exercise the emulator's
@@ -89,10 +89,10 @@ func postForResult(url string, payload any) map[string]any {
 // per-chat counter, so the bot's reply to the chat's first message never
 // collides with it.
 func TestSharedPerChatMessageIDSequence(t *testing.T) {
-	cw := chatwright.New(t)
-	cw.ServeWebhook(editingGreeter(cw.BotAPIURL(), "TEST:TOKEN"))
+	w := cw.New(t)
+	w.ServeWebhook(editingGreeter(w.BotAPIURL(), "TEST:TOKEN"))
 
-	chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+	chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 	chat.SendText("/start") // consumes message ID 1 in this chat
 
 	msg := chat.ExpectBotMessage().Within(time.Second).IsTextMessage()
@@ -116,10 +116,10 @@ func TestTranscriptShowsInboundOutboundAndEdits(t *testing.T) {
 		// A short safety timeout keeps this test fast: Within no longer
 		// shortens the wait window itself (see within_test.go), so forcing a
 		// quick, deliberate timeout goes through WithSafetyTimeout instead.
-		cw := chatwright.New(tb, chatwright.WithSafetyTimeout(50*time.Millisecond))
-		cw.ServeWebhook(editingGreeter(cw.BotAPIURL(), "TEST:TOKEN"))
+		w := cw.New(tb, cw.WithSafetyTimeout(50*time.Millisecond))
+		w.ServeWebhook(editingGreeter(w.BotAPIURL(), "TEST:TOKEN"))
 
-		chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+		chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 		chat.SendText("/start")
 		msg := chat.ExpectBotMessage().Within(time.Second).Text("Hello")
 
@@ -150,10 +150,10 @@ func TestTranscriptShowsInboundOutboundAndEdits(t *testing.T) {
 func TestWhatsAppTranscriptOnTimeout(t *testing.T) {
 	fake := newFakeTB()
 	failed, logs := fake.run(func(tb testing.TB) {
-		cw := chatwright.New(tb, chatwright.OnPlatform(whatsapp.Platform()), chatwright.WithSafetyTimeout(50*time.Millisecond))
-		cw.ServeWebhook(waGreeter(cw.BotAPIURL(), "chatwright-phone"))
+		w := cw.New(tb, cw.OnPlatform(whatsapp.Platform()), cw.WithSafetyTimeout(50*time.Millisecond))
+		w.ServeWebhook(waGreeter(w.BotAPIURL(), "chatwright-phone"))
 
-		chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+		chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 		chat.SendText("Hi")
 		chat.ExpectBotMessage().Within(time.Second).Text("Howdy stranger")
 

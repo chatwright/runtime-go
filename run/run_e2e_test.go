@@ -8,35 +8,61 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"github.com/chatwright/chatwright"
-	"github.com/chatwright/chatwright/actor"
-	"github.com/chatwright/chatwright/bundle"
-	"github.com/chatwright/chatwright/examples/greetbot"
-	"github.com/chatwright/chatwright/goal"
-	"github.com/chatwright/chatwright/observe"
-	"github.com/chatwright/chatwright/platform"
-	"github.com/chatwright/chatwright/run"
-	"github.com/chatwright/chatwright/telegram"
+	"chatwright.dev/runtime/actor"
+	"chatwright.dev/runtime/cw"
+	"chatwright.dev/runtime/examples/greetbot"
+	"chatwright.dev/runtime/goal"
+	"chatwright.dev/runtime/platform"
+	"chatwright.dev/runtime/run"
+	"chatwright.dev/runtime/telegram"
+	"chatwright.dev/sdk"
 )
 
-// schemaPath is repository-root-relative to this package (run/), matching
-// bundle/schema_test.go's own schemaPath at the same tree depth.
-const schemaPath = "../formats/run-bundle/v1/schema.json"
+// sdkSchemaPath resolves the run-bundle JSON Schema committed inside the
+// chatwright.dev/sdk module — the wire model's owner — as actually resolved
+// by this build's go.mod, via `go list -m` (an offline lookup into the local
+// module cache; the module is already downloaded, so no network is
+// involved). Reading the schema from the resolved dependency, rather than
+// keeping a copy in this repository, makes the validated schema drift-free
+// by construction: it is byte-for-byte the file shipped in the exact sdk
+// version these bundles are assembled with. GOWORK=off mirrors this
+// module's own gate invocations (a stray user-level go.work must not
+// redirect the lookup).
+func sdkSchemaPath(t *testing.T) string {
+	t.Helper()
+	cmd := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "chatwright.dev/sdk")
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	out, err := cmd.Output()
+	if err != nil {
+		var stderr string
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			stderr = string(exitErr.Stderr)
+		}
+		t.Fatalf("resolve the chatwright.dev/sdk module directory (go list -m): %v\n%s", err, stderr)
+	}
+	dir := strings.TrimSpace(string(out))
+	if dir == "" {
+		t.Fatal("go list -m -f {{.Dir}} chatwright.dev/sdk returned an empty directory")
+	}
+	return filepath.Join(dir, "formats", "run-bundle", "v1", "schema.json")
+}
 
-// compileSchema and validateBundleFile duplicate bundle/schema_test.go's own
-// unexported helpers of the same names — this package cannot reference them
-// directly (a different package), the same reason bundle_e2e_test.go's own
-// doc comment gives for duplicating dryRunLearnEnglishActionID from
-// campaign's frozen e2e_test.go. See bundle/schema_test.go for the approach
-// this reuses.
+// compileSchema and validateBundleFile mirror the sdk repository's own
+// schema_test.go helpers of the same names, compiling the schema file
+// sdkSchemaPath resolves. Shared by this file's TestTwoPartGreetbotProof
+// and bundle_e2e_test.go's e2e gate (both package run_test).
 func compileSchema(t *testing.T) *jsonschema.Schema {
 	t.Helper()
+	schemaPath := sdkSchemaPath(t)
 	sch, err := jsonschema.NewCompiler().Compile(schemaPath)
 	if err != nil {
 		t.Fatalf("compile %s: %v", schemaPath, err)
@@ -57,7 +83,7 @@ func validateBundleFile(t *testing.T, schema *jsonschema.Schema, path string) {
 		t.Fatalf("decode %s: %v", path, err)
 	}
 	if err := schema.Validate(inst); err != nil {
-		t.Fatalf("%s does not validate against %s:\n%v", path, schemaPath, err)
+		t.Fatalf("%s does not validate against the sdk run-bundle schema:\n%v", path, err)
 	}
 }
 
@@ -72,7 +98,7 @@ type onboardingInput struct{}
 // "/start", pick English, confirm the language-choice message is edited to
 // "Howdy stranger"), Part 2 an ai-goal acknowledgement driven by a
 // ScriptedProvider (zero tokens) — over one continuous journal, in one
-// bundle.Run.
+// sdk.Run.
 //
 // It proves, end to end, exactly the pieces hybrid-runs.md's "Must-be-true"
 // assumption names: "A deterministic fragment and the actor loop can hand
@@ -91,14 +117,14 @@ func TestTwoPartGreetbotProof(t *testing.T) {
 	t.Cleanup(srv.Close)
 	emu.SetWebhook(srv.URL, http.DefaultClient)
 
-	onboardingSource := chatwright.SourceReference{
-		URI:      "https://github.com/chatwright/chatwright/blob/HEAD/run/run_e2e_test.go#L1",
+	onboardingSource := cw.SourceReference{
+		URI:      "https://github.com/chatwright/runtime-go/blob/HEAD/run/run_e2e_test.go#L1",
 		Revision: "HEAD",
 	}
-	onboardingFragment := chatwright.Fragment[onboardingInput]{
-		Definition:  chatwright.Definition{Name: "greetbot-onboarding", Source: onboardingSource},
+	onboardingFragment := cw.Fragment[onboardingInput]{
+		Definition:  cw.Definition{Name: "greetbot-onboarding", Source: onboardingSource},
 		CloneInputs: func(in onboardingInput) onboardingInput { return in },
-		Execute: func(ec *chatwright.ExecutionContext, _ onboardingInput) error {
+		Execute: func(ec *cw.ExecutionContext, _ onboardingInput) error {
 			if err := emu.SubmitText(chatID, user, "/start"); err != nil {
 				return fmt.Errorf("submit /start: %w", err)
 			}
@@ -137,7 +163,7 @@ func TestTwoPartGreetbotProof(t *testing.T) {
 		},
 	}
 	onboardingPart := run.NewDeterministicPart("onboarding", "Onboarding: pick English",
-		"", onboardingFragment, chatwright.EffectiveInputs[onboardingInput]{})
+		"", onboardingFragment, cw.EffectiveInputs[onboardingInput]{})
 
 	acknowledgeGoal := goal.Goal{
 		ID: "acknowledge-greeting", Title: "Acknowledge the greeting the onboarding fragment already established",
@@ -189,7 +215,7 @@ func TestTwoPartGreetbotProof(t *testing.T) {
 	}
 	sawGreeting := false
 	for _, m := range firstObservation.Observation.Messages {
-		if m.Actor == observe.ActorBot && m.Text == "Howdy stranger" {
+		if m.Actor == sdk.MessageActorBot && m.Text == "Howdy stranger" {
 			sawGreeting = true
 		}
 	}
@@ -220,43 +246,43 @@ func TestTwoPartGreetbotProof(t *testing.T) {
 	// Assemble the bundle: the roster (the scripted client-side actor that
 	// drove both parts, and the bot-under-test), the run's continuous
 	// journal, and the ordered parts run.AssembleBundleRun derived.
-	actors := []bundle.Actor{
+	actors := []sdk.Actor{
 		{
-			ID: "explorer", Type: bundle.ActorScripted, Name: user.FirstName,
-			PlatformIdentities: map[string]bundle.PlatformIdentity{
+			ID: "explorer", Type: sdk.ActorScripted, Name: user.FirstName,
+			PlatformIdentities: map[string]sdk.PlatformIdentity{
 				"telegram": {UserID: user.ID, FirstName: user.FirstName},
 			},
 		},
 		{
-			ID: "greetbot", Type: bundle.ActorBot, Name: "ChatwrightBot",
-			PlatformIdentities: map[string]bundle.PlatformIdentity{
+			ID: "greetbot", Type: sdk.ActorBot, Name: "ChatwrightBot",
+			PlatformIdentities: map[string]sdk.PlatformIdentity{
 				"telegram": {UserID: telegram.EmulatedBotUserID, FirstName: "ChatwrightBot"},
 			},
 		},
 	}
-	chats := []bundle.ChatJournal{{ChatID: chatID, Entries: entries}}
+	chats := []sdk.ChatJournal{run.WireJournal(chatID, entries)}
 
 	bundleRun := run.AssembleBundleRun(run.AssembleBundleRunInput{
-		RunID: "run-1", Platform: "telegram", EndpointProfile: bundle.EndpointProfilePlatformEmulated,
+		RunID: "run-1", Platform: "telegram", EndpointProfile: sdk.EndpointProfilePlatformEmulated,
 		Actors: actors, Chats: chats, Result: result,
 	})
 	if len(bundleRun.Parts) != 2 {
 		t.Fatalf("bundleRun.Parts = %+v, want exactly two parts", bundleRun.Parts)
 	}
-	if bundleRun.Parts[0].Kind != bundle.PartKindDeterministic || bundleRun.Parts[0].AIGoal != nil {
+	if bundleRun.Parts[0].Kind != sdk.PartKindDeterministic || bundleRun.Parts[0].AIGoal != nil {
 		t.Fatalf("bundleRun.Parts[0] = %+v, want kind=deterministic with no aiGoal section", bundleRun.Parts[0])
 	}
-	if bundleRun.Parts[1].Kind != bundle.PartKindAIGoal || bundleRun.Parts[1].AIGoal == nil {
+	if bundleRun.Parts[1].Kind != sdk.PartKindAIGoal || bundleRun.Parts[1].AIGoal == nil {
 		t.Fatalf("bundleRun.Parts[1] = %+v, want kind=ai-goal with a populated aiGoal section", bundleRun.Parts[1])
 	}
 
-	b := bundle.Bundle{
-		Format: bundle.FormatV1,
-		Metadata: bundle.Metadata{
+	b := sdk.Bundle{
+		Format: sdk.FormatV1,
+		Metadata: sdk.Metadata{
 			CreatedAt:         time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC),
-			ChatwrightVersion: bundle.ModuleVersion(),
+			ChatwrightVersion: sdk.ModuleVersion(),
 		},
-		Runs: []bundle.Run{bundleRun},
+		Runs: []sdk.Run{bundleRun},
 	}
 
 	path := filepath.Join(t.TempDir(), "greetbot-two-part.chatwright.json")
@@ -264,7 +290,7 @@ func TestTwoPartGreetbotProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if err := bundle.Write(f, b); err != nil {
+	if err := sdk.Write(f, b); err != nil {
 		_ = f.Close()
 		t.Fatalf("Write() error = %v", err)
 	}
@@ -282,7 +308,7 @@ func TestTwoPartGreetbotProof(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 	defer readBack.Close()
-	decoded, err := bundle.Read(readBack)
+	decoded, err := sdk.Read(readBack)
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
@@ -291,7 +317,7 @@ func TestTwoPartGreetbotProof(t *testing.T) {
 	}
 
 	var rewritten bytes.Buffer
-	if err := bundle.Write(&rewritten, decoded); err != nil {
+	if err := sdk.Write(&rewritten, decoded); err != nil {
 		t.Fatalf("Write(decoded) error = %v", err)
 	}
 	if string(written) != rewritten.String() {

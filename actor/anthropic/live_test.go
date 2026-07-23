@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright/actor"
-	"github.com/chatwright/chatwright/actor/anthropic"
+	"chatwright.dev/runtime/actor"
+	"chatwright.dev/runtime/actor/anthropic"
 )
 
 // TestLive_Propose is the package's one optional live smoke test: it calls

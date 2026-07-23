@@ -1,4 +1,4 @@
-package chatwright_test
+package cw_test
 
 import (
 	"encoding/json"
@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright"
+	"chatwright.dev/runtime/cw"
 )
 
 // delayedGreeter replies "Howdy stranger" after the given delay, so tests can
@@ -43,10 +43,10 @@ func delayedGreeter(botAPIURL, token string, delay time.Duration) http.HandlerFu
 func TestWithin_LateReply_FailsWithLatencyDiagnostic(t *testing.T) {
 	fake := newFakeTB()
 	failed, logs := fake.run(func(tb testing.TB) {
-		cw := chatwright.New(tb) // default 5s safety timeout comfortably covers the 150ms delay below
-		cw.ServeWebhook(delayedGreeter(cw.BotAPIURL(), "TEST:TOKEN", 150*time.Millisecond))
+		w := cw.New(tb) // default 5s safety timeout comfortably covers the 150ms delay below
+		w.ServeWebhook(delayedGreeter(w.BotAPIURL(), "TEST:TOKEN", 150*time.Millisecond))
 
-		chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+		chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 		chat.SendText("Hi")
 		chat.ExpectBotMessage().Within(50 * time.Millisecond).Text("Howdy stranger")
 	})
@@ -70,10 +70,10 @@ func TestWithin_LateReply_FailsWithLatencyDiagnostic(t *testing.T) {
 // never be undercut by a smaller configured safety timeout: the observation
 // window extends to cover a generous per-assertion budget.
 func TestWithin_BudgetLargerThanSafetyTimeout_ExtendsWait(t *testing.T) {
-	cw := chatwright.New(t, chatwright.WithSafetyTimeout(50*time.Millisecond))
-	cw.ServeWebhook(delayedGreeter(cw.BotAPIURL(), "TEST:TOKEN", 150*time.Millisecond))
+	w := cw.New(t, cw.WithSafetyTimeout(50*time.Millisecond))
+	w.ServeWebhook(delayedGreeter(w.BotAPIURL(), "TEST:TOKEN", 150*time.Millisecond))
 
-	chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+	chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 	chat.SendText("Hi")
 	// The budget (300ms) exceeds the configured safety timeout (50ms): the
 	// wait must extend to the budget rather than truncate to the timeout, so
@@ -89,10 +89,10 @@ func TestWithin_BudgetLargerThanSafetyTimeout_ExtendsWait(t *testing.T) {
 func TestWithin_NoReply_FailsAtSafetyTimeoutWithTranscript(t *testing.T) {
 	fake := newFakeTB()
 	failed, logs := fake.run(func(tb testing.TB) {
-		cw := chatwright.New(tb, chatwright.WithSafetyTimeout(50*time.Millisecond))
-		cw.ServeWebhook(silentGreeter(cw.BotAPIURL(), "TEST:TOKEN"))
+		w := cw.New(tb, cw.WithSafetyTimeout(50*time.Millisecond))
+		w.ServeWebhook(silentGreeter(w.BotAPIURL(), "TEST:TOKEN"))
 
-		chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+		chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 		chat.SendText("/silent")
 		chat.ExpectBotMessage().IsTextMessage()
 	})

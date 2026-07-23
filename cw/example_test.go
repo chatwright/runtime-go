@@ -1,4 +1,4 @@
-package chatwright_test
+package cw_test
 
 import (
 	"bytes"
@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright"
-	"github.com/chatwright/chatwright/whatsapp"
+	"chatwright.dev/runtime/cw"
+	"chatwright.dev/runtime/whatsapp"
 )
 
 // The greeter bots below are deliberately framework-agnostic: plain net/http, no
@@ -108,8 +108,8 @@ func post(url string, payload any) {
 
 // greetScenario is a single platform-agnostic scenario. It uses only neutral
 // verbs, so the same function runs unchanged on any platform.
-func greetScenario(cw *chatwright.Chatwright) {
-	chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+func greetScenario(w *cw.Chatwright) {
+	chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 	chat.SendText("Hi")
 	chat.ExpectBotMessage().
 		Within(time.Second).
@@ -121,25 +121,25 @@ func greetScenario(cw *chatwright.Chatwright) {
 // to platform-specific calls.
 func TestGreeting_CrossPlatform(t *testing.T) {
 	t.Run("telegram", func(t *testing.T) {
-		cw := chatwright.New(t) // Telegram is the default platform
-		cw.ServeWebhook(tgGreeter(cw.BotAPIURL(), "TEST:TOKEN"))
-		greetScenario(cw)
+		w := cw.New(t) // Telegram is the default platform
+		w.ServeWebhook(tgGreeter(w.BotAPIURL(), "TEST:TOKEN"))
+		greetScenario(w)
 	})
 
 	t.Run("whatsapp", func(t *testing.T) {
-		cw := chatwright.New(t, chatwright.OnPlatform(whatsapp.Platform()))
-		cw.ServeWebhook(waGreeter(cw.BotAPIURL(), "chatwright-phone"))
-		greetScenario(cw)
+		w := cw.New(t, cw.OnPlatform(whatsapp.Platform()))
+		w.ServeWebhook(waGreeter(w.BotAPIURL(), "chatwright-phone"))
+		greetScenario(w)
 	})
 }
 
 // TestTelegramActions exercises interactive actions (inline buttons) via the
 // neutral ExpectAction API.
 func TestTelegramActions(t *testing.T) {
-	cw := chatwright.New(t)
-	cw.ServeWebhook(tgGreeter(cw.BotAPIURL(), "TEST:TOKEN"))
+	w := cw.New(t)
+	w.ServeWebhook(tgGreeter(w.BotAPIURL(), "TEST:TOKEN"))
 
-	chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+	chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 	chat.SendText("/start")
 
 	msg := chat.ExpectBotMessage().Within(time.Second).IsTextMessage()
@@ -161,10 +161,10 @@ func TestTelegramActions(t *testing.T) {
 // TestTelegramClick clicks an inline button and asserts the follow-up reply,
 // proving the user/agent can activate an action and continue the conversation.
 func TestTelegramClick(t *testing.T) {
-	cw := chatwright.New(t)
-	cw.ServeWebhook(tgGreeter(cw.BotAPIURL(), "TEST:TOKEN"))
+	w := cw.New(t)
+	w.ServeWebhook(tgGreeter(w.BotAPIURL(), "TEST:TOKEN"))
 
-	chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+	chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 	chat.SendText("/start")
 
 	msg := chat.ExpectBotMessage().Within(time.Second).IsTextMessage()

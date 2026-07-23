@@ -3,9 +3,9 @@ package campaign
 import (
 	"fmt"
 
-	"github.com/chatwright/chatwright/actor"
-	"github.com/chatwright/chatwright/goal"
-	"github.com/chatwright/chatwright/observe"
+	"chatwright.dev/runtime/actor"
+	"chatwright.dev/runtime/goal"
+	"chatwright.dev/runtime/observe"
 )
 
 // AssembleInput is everything Assemble needs to build a Report: the Goal a

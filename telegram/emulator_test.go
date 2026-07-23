@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chatwright/chatwright/platform"
+	"chatwright.dev/runtime/platform"
 )
 
 // postJSON POSTs a JSON payload to the fake Bot API and returns the HTTP

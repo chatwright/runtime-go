@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chatwright/chatwright/observe"
-	"github.com/chatwright/chatwright/platform"
-	"github.com/chatwright/chatwright/telegram"
+	"chatwright.dev/runtime/observe"
+	"chatwright.dev/runtime/platform"
+	"chatwright.dev/runtime/telegram"
 )
 
 // --- test helpers: drive the real Telegram emulator's fake Bot API exactly

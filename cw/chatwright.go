@@ -1,5 +1,6 @@
-// Package chatwright is a framework- and language-agnostic testing harness for
-// conversational applications.
+// Package cw is the scenario API of module chatwright.dev/runtime: a
+// framework- and language-agnostic testing harness for conversational
+// applications.
 //
 // A scenario is written once against platform-neutral verbs — send a text, expect
 // a message, expect an action — and Chatwright maps them onto a concrete platform
@@ -11,15 +12,15 @@
 //
 // Typical use:
 //
-//	cw := chatwright.New(t) // defaults to Telegram
-//	// Configure the bot-under-test to use cw.BotAPIURL() as its platform API,
+//	w := cw.New(t) // defaults to Telegram
+//	// Configure the bot-under-test to use w.BotAPIURL() as its platform API,
 //	// then hand Chatwright its webhook handler (any http.Handler):
-//	cw.ServeWebhook(myBot.WebhookHandler())
+//	w.ServeWebhook(myBot.WebhookHandler())
 //
-//	chat := cw.PrivateChat(chatwright.User{ID: "alice", FirstName: "Alice"})
+//	chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
 //	chat.SendText("/start")
 //	chat.ExpectBotMessage().Within(time.Second).Text("Howdy stranger")
-package chatwright
+package cw
 
 import (
 	"hash/fnv"
@@ -29,8 +30,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright/platform"
-	"github.com/chatwright/chatwright/telegram"
+	"chatwright.dev/runtime/platform"
+	"chatwright.dev/runtime/telegram"
 )
 
 // defaultSafetyTimeout is the wall-clock ceiling Chatwright waits for a bot

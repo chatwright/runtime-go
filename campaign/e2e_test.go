@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chatwright/chatwright/actor"
-	"github.com/chatwright/chatwright/campaign"
-	"github.com/chatwright/chatwright/examples/greetbot"
-	"github.com/chatwright/chatwright/goal"
-	"github.com/chatwright/chatwright/observe"
-	"github.com/chatwright/chatwright/platform"
-	"github.com/chatwright/chatwright/telegram"
+	"chatwright.dev/runtime/actor"
+	"chatwright.dev/runtime/campaign"
+	"chatwright.dev/runtime/examples/greetbot"
+	"chatwright.dev/runtime/goal"
+	"chatwright.dev/runtime/observe"
+	"chatwright.dev/runtime/platform"
+	"chatwright.dev/runtime/telegram"
 )
 
 // TestScriptedCampaignAgainstGreetbotEndToEnd is the slice-2 plan's gate: a

@@ -22,7 +22,7 @@
 package observe
 
 // ChatRef identifies the chat an Observation projects. It carries
-// Chatwright's own chat identity (see chatwright.Chat.PrivateChat) — never a
+// Chatwright's own chat identity (see cw.Chat.PrivateChat) — never a
 // raw platform chat ID scraped from the wire.
 type ChatRef struct {
 	ChatID int64 `json:"chatId"`

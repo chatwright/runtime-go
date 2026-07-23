@@ -3,10 +3,10 @@ package campaign_test
 import (
 	"testing"
 
-	"github.com/chatwright/chatwright/actor"
-	"github.com/chatwright/chatwright/campaign"
-	"github.com/chatwright/chatwright/goal"
-	"github.com/chatwright/chatwright/observe"
+	"chatwright.dev/runtime/actor"
+	"chatwright.dev/runtime/campaign"
+	"chatwright.dev/runtime/goal"
+	"chatwright.dev/runtime/observe"
 )
 
 // fourTaskGoal returns a Goal with one task in each outcome this test suite

@@ -1,4 +1,4 @@
-package chatwright
+package cw
 
 import (
 	"errors"

@@ -8,7 +8,7 @@ import (
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
 
-	"github.com/chatwright/chatwright/actor"
+	"chatwright.dev/runtime/actor"
 )
 
 // wireProposal is the JSON shape responseJSONSchema (prompt.go) describes.

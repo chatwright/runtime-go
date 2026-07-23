@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chatwright/chatwright/goal"
-	"github.com/chatwright/chatwright/observe"
-	"github.com/chatwright/chatwright/platform"
+	"chatwright.dev/runtime/goal"
+	"chatwright.dev/runtime/observe"
+	"chatwright.dev/runtime/platform"
 )
 
 // Actuator is the narrow seam the loop acts through: exactly the subset of
@@ -59,7 +59,8 @@ type Config struct {
 	// observe.Observation it produces (see Loop.Observations). Retention is
 	// ON by default (the zero value is false) — a campaign's entire purpose
 	// is producing evidence, and the retained observation bodies are what
-	// let a bundle.Bundle stay self-contained: a player can show exactly
+	// let a run bundle (chatwright.dev/sdk's Bundle) stay self-contained: a
+	// player can show exactly
 	// what the actor saw at each step without re-deriving it from a
 	// transcript. Set this true only when a campaign is long enough, or
 	// memory-bounded enough, that holding every Observation body for its
@@ -123,7 +124,7 @@ type Loop struct {
 	cfg      Config
 
 	events              []LoopEvent
-	consumedBotMessages int // mirrors chatwright.Chat's own WaitForMessage cursor
+	consumedBotMessages int // mirrors cw.Chat's own WaitForMessage cursor
 	lastBotMessage      *platform.Message
 
 	// observations retains every observe.Observation this Loop has produced
@@ -355,7 +356,7 @@ func (l *Loop) observeAndSync() (*observe.Observation, error) {
 
 // refreshRawBotMessage keeps l.lastBotMessage — the raw platform.Message
 // backing the most recent bot-authored entry in obs.Messages — in sync,
-// using exactly the primitives chatwright.Chat/BotMessage use internally
+// using exactly the primitives cw.Chat/BotMessage use internally
 // (WaitForMessage for a new message, WaitForEdit for an in-place edit of the
 // one already held). obs's journal read already proved the message/edit
 // exists, so these calls are a synchronisation formality, not a real wait,

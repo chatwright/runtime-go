@@ -1,4 +1,4 @@
-package chatwright_test
+package cw_test
 
 import (
 	"fmt"
