@@ -20,7 +20,7 @@ func TestFlightLogLandsOnDiskBeforeLogfReturns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFlightLog() error = %v", err)
 	}
-	defer fl.Close()
+	defer func() { _ = fl.Close() }()
 
 	if err := fl.Logf("phase=%s model=%s", "cell-start", "gemma-4-e4b"); err != nil {
 		t.Fatalf("Logf() error = %v", err)
@@ -46,7 +46,7 @@ func TestFlightLogEachLineTimestamped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFlightLog() error = %v", err)
 	}
-	defer fl.Close()
+	defer func() { _ = fl.Close() }()
 
 	if err := fl.Logf("phase=matrix-start"); err != nil {
 		t.Fatalf("Logf() error = %v", err)
@@ -93,7 +93,7 @@ func TestFlightLogNeverTruncatesOnReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFlightLog() [2] error = %v", err)
 	}
-	defer fl2.Close()
+	defer func() { _ = fl2.Close() }()
 	if err := fl2.Logf("phase=matrix-start scenario=after-restart"); err != nil {
 		t.Fatalf("Logf() [2] error = %v", err)
 	}
