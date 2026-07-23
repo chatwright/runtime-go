@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- `actor/openai`: an OpenAI-compatible `actor.Provider` for
+  `POST {BaseURL}/chat/completions` — Ollama, LM Studio, OpenRouter, vLLM and
+  OpenAI itself. Ported from
+  [github.com/chatwright/chatwright](https://github.com/chatwright/chatwright)
+  commit `257d99f`, which landed on the old repository after this module's
+  extraction snapshot; adapted to this module's import paths and to
+  assembling bundles via `run.AssembleBundleRun`/`run.WireJournal` and
+  `chatwright.dev/sdk` types (the pre-split `bundle` package's successor).
+  Mirrors `actor/anthropic`'s structured-output contract with a graceful
+  `json_schema` → `json_object` one-retry degradation for servers that
+  reject strict structured output.
+
 ## 0.1.0
 
 Initial extraction from
