@@ -42,6 +42,7 @@ package arena
 import (
 	"context"
 	"fmt"
+	"io"
 	"runtime"
 	"strings"
 	"time"
@@ -116,6 +117,14 @@ type RunOptions struct {
 	// memory". Never auto-detected: left blank unless the caller supplies
 	// it.
 	Hardware string
+
+	// ProgressWriter, when non-nil, receives one formatted stage line
+	// (FormatProgressLine) per run.ProgressSnapshot emitted while running
+	// each cell — spec/ideas/campaign-progress-reporting.md's "the arena
+	// harness (per-cell progress and matrix position, e.g. 'model 2/4 ·
+	// repeat 1/3 · task 1/2 · steps 5/12')". Nil (the zero value) means no
+	// progress output — Run behaves exactly as before this field existed.
+	ProgressWriter io.Writer
 
 	// FlightLog, when non-nil, makes Run write one fsync'd line to it
 	// before/around every consequential phase boundary — matrix start,
@@ -339,7 +348,7 @@ func Run(ctx context.Context, matrix Matrix, opts RunOptions) (Results, error) {
 
 	opts.logf("arena: phase=matrix-start scenario=%s@%s providers=%s", matrix.Scenario.ID, matrix.Scenario.Version, providerLabels(matrix.Providers))
 
-	for _, spec := range matrix.Providers {
+	for modelIndex, spec := range matrix.Providers {
 		opts.logf("arena: phase=loader-invoke model=%s kind=%s", spec.label(), string(spec.Kind))
 		loadResult, err := opts.loaderFor(spec.Kind).Load(ctx, spec)
 		if err != nil {
@@ -349,7 +358,9 @@ func Run(ctx context.Context, matrix Matrix, opts RunOptions) (Results, error) {
 		opts.logf("arena: phase=load model=%s ctx=%d performed=%t note=%q", spec.label(), spec.ContextLength, loadResult.Performed, loadResult.Note)
 		results.Environment.Providers = append(results.Environment.Providers, ProviderEnvironment{Spec: spec, LoadResult: loadResult})
 
-		model := runProviderModelBlock(ctx, matrix, spec, opts, goalDef, now, newProvider)
+		model := runProviderModelBlock(ctx, matrix, spec, opts, goalDef, now, newProvider, matrixPosition{
+			modelIndex: modelIndex + 1, modelCount: len(matrix.Providers), repeatCount: matrix.Repeats,
+		})
 		results.Models = append(results.Models, model)
 
 		// Block end is its own flight-log phase before the next model's
@@ -372,7 +383,7 @@ func Run(ctx context.Context, matrix Matrix, opts RunOptions) (Results, error) {
 // goes. Split out of Run so the surrounding loop's own load/block-end/
 // memory-snapshot flight-log lines bracket it uniformly, whether this block
 // completes normally or returns early on a ProviderFactory failure.
-func runProviderModelBlock(ctx context.Context, matrix Matrix, spec ProviderSpec, opts RunOptions, goalDef goal.Goal, now func() time.Time, newProvider func(ProviderSpec) (actor.Provider, error)) ModelResult {
+func runProviderModelBlock(ctx context.Context, matrix Matrix, spec ProviderSpec, opts RunOptions, goalDef goal.Goal, now func() time.Time, newProvider func(ProviderSpec) (actor.Provider, error), pos matrixPosition) ModelResult {
 	provider, err := newProvider(spec)
 	if err != nil {
 		return ModelResult{Spec: spec, ProviderErr: err}
@@ -385,8 +396,9 @@ func runProviderModelBlock(ctx context.Context, matrix Matrix, spec ProviderSpec
 	opts.logf("arena: phase=warmup-end model=%s cold_start_s=%.2f err=%q", spec.label(), model.Warmup.ColdStart.Seconds(), errText(model.Warmup.Err))
 
 	for repeat := 1; repeat <= matrix.Repeats; repeat++ {
+		pos.repeat = repeat
 		opts.logf("arena: phase=cell-start model=%s repeat=%d", spec.label(), repeat)
-		cell := runCell(ctx, matrix.Scenario, provider, spec, goalDef, repeat, now)
+		cell := runCell(ctx, matrix.Scenario, provider, spec, goalDef, repeat, now, opts.ProgressWriter, pos)
 		opts.logf("arena: phase=cell-end model=%s repeat=%d outcome=%q", spec.label(), repeat, cellOutcome(cell))
 		model.Cells = append(model.Cells, cell)
 	}
@@ -465,13 +477,24 @@ func runWarmup(ctx context.Context, provider actor.Provider, now func() time.Tim
 	return wr
 }
 
+// matrixPosition names one cell's coordinates within Run's matrix — the
+// arena-level context FormatProgressLine prepends to a run.ProgressSnapshot
+// (spec/ideas/campaign-progress-reporting.md's "model 2/4 · repeat 1/3 ·
+// task 1/2 · steps 5/12").
+type matrixPosition struct {
+	modelIndex, modelCount int
+	repeat, repeatCount    int
+}
+
 // runCell runs one timed campaign — one Matrix repeat — against a fresh
 // Scenario.Setup session, assembling a full sdk.Bundle exactly the way the
 // scratchpad harness's cmd/run-cell/main.go runCell did (the same
 // run.NewAIGoalPart / run.Run / run.AssembleBundleRun path every other
 // chatwright runtime bundle writer uses), except it never writes the
-// bundle to disk — see the package doc comment.
-func runCell(ctx context.Context, scenario Scenario, provider actor.Provider, spec ProviderSpec, g goal.Goal, repeat int, now func() time.Time) CellResult {
+// bundle to disk — see the package doc comment. When progressWriter is
+// non-nil, one formatted stage line (FormatProgressLine) is written per
+// run.ProgressSnapshot this cell's run.Run emits.
+func runCell(ctx context.Context, scenario Scenario, provider actor.Provider, spec ProviderSpec, g goal.Goal, repeat int, now func() time.Time, progressWriter io.Writer, pos matrixPosition) CellResult {
 	session, err := scenario.Setup()
 	if err != nil {
 		return CellResult{Repeat: repeat, Err: fmt.Errorf("arena: scenario setup: %w", err)}
@@ -490,6 +513,11 @@ func runCell(ctx context.Context, scenario Scenario, provider actor.Provider, sp
 		ID:          runID,
 		Environment: run.Environment{Emulator: session.Emulator, ChatIDs: []int64{session.ChatID}, Now: now},
 		Parts:       []run.Part{part},
+	}
+	if progressWriter != nil {
+		r.OnProgress = func(snap run.ProgressSnapshot) {
+			_, _ = io.WriteString(progressWriter, formatProgressLine(spec, pos, snap)+"\n")
+		}
 	}
 
 	start := now()

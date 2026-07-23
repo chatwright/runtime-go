@@ -104,7 +104,11 @@ type AIGoalPartInput struct {
 	// required (also used to construct this Part's own observe.Engine).
 	// Config.Now is always overwritten with the owning Run's
 	// Environment.Now before the loop starts — a caller-set value here is
-	// never consulted, so it may be left nil.
+	// never consulted, so it may be left nil. Config.OnProgress is
+	// likewise overwritten (to a closure forwarding into the owning Run's
+	// own OnProgress, with this Part's position added) whenever the Run
+	// declares one — see Run.OnProgress; a caller-set value here is only
+	// consulted when the Run itself declares no OnProgress.
 	Config actor.Config
 }
 

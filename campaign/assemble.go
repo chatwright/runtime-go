@@ -68,6 +68,7 @@ func Assemble(in AssembleInput) Report {
 			findings = append(findings, finding)
 		}
 	}
+	findings = append(findings, deriveMechanicalEventFindings(in.Events)...)
 	findings = append(findings, in.CallerFindings...)
 
 	return Report{
@@ -135,6 +136,48 @@ func deriveFinding(taskID string, status goal.TaskStatus, attempted bool, events
 	default:
 		return Finding{}, false // TaskCompleted: no finding, see TaskOutcome.
 	}
+}
+
+// deriveMechanicalEventFindings scans every event in the campaign (not
+// grouped or filtered by task status, unlike deriveFinding) for two
+// self-describing actor.ActionOutcomeKind values, each producing exactly
+// one Finding per occurrence, regardless of the owning task's eventual
+// outcome — an actor-overshoot or a constraint-violation is worth
+// reporting even when the task it happened on went on to succeed:
+//
+//   - actor.ActionOvershootProbe: the actor proposed another action after
+//     its task's evidence-defined completion criteria already held (see
+//     actor.Loop.RunTask's own overshoot-probe handling) — becomes
+//     FindingActorOvershoot.
+//   - actor.ActionBlockedConstraintViolation: the actor proposed text that
+//     violated its task's (or goal's) machine-checkable content rules,
+//     blocked before it ever reached the bot — becomes
+//     FindingConstraintViolation.
+func deriveMechanicalEventFindings(events []actor.LoopEvent) []Finding {
+	var findings []Finding
+	for _, e := range events {
+		switch e.Action.Kind {
+		case actor.ActionOvershootProbe:
+			findings = append(findings, Finding{
+				Kind:   FindingActorOvershoot,
+				TaskID: e.TaskID,
+				Summary: fmt.Sprintf("task %q: the actor proposed another action after its evidence-defined completion criteria already held (recorded, never executed)",
+					e.TaskID),
+				Evidence:   Evidence{ObservationSequences: []int64{e.ObservationSequence}, LoopEventIndexes: []int{e.Index}},
+				Confidence: "mechanical",
+			})
+		case actor.ActionBlockedConstraintViolation:
+			findings = append(findings, Finding{
+				Kind:   FindingConstraintViolation,
+				TaskID: e.TaskID,
+				Summary: fmt.Sprintf("task %q: the actor proposed text that violated its content rules (%s); blocked before it reached the bot",
+					e.TaskID, e.Action.Detail),
+				Evidence:   Evidence{ObservationSequences: []int64{e.ObservationSequence}, LoopEventIndexes: []int{e.Index}},
+				Confidence: "mechanical",
+			})
+		}
+	}
+	return findings
 }
 
 // coverageGapFinding builds an evidence-free FindingCoverageGap for taskID —
