@@ -11,15 +11,30 @@ import (
 
 // chatCompletionResponse is the subset of an OpenAI-compatible
 // POST /chat/completions success response body Propose needs: the first
-// choice's message content (the model's reply text) and its finish_reason,
-// the model id the server actually served, and, when present, token usage.
-// Every OpenAI-compatible server this package targets (OpenAI, Ollama, LM
-// Studio, OpenRouter, vLLM) emits at least this much.
+// choice's message content (the model's reply text), the two reasoning-
+// bearing field names some reasoning models route that text into instead
+// (see responseText in response.go for the precedence between all three),
+// and that choice's finish_reason, the model id the server actually
+// served, and, when present, token usage. Every OpenAI-compatible server
+// this package targets (OpenAI, Ollama, LM Studio, OpenRouter, vLLM) emits
+// at least this much.
 type chatCompletionResponse struct {
 	Model   string `json:"model"`
 	Choices []struct {
 		Message struct {
 			Content string `json:"content"`
+			// ReasoningContent is the LM Studio/DeepSeek-style field a
+			// reasoning model's server can route the ENTIRE reply into,
+			// leaving Content empty — see chatwright/runtime-go#3: the
+			// first actor-model arena run hit exactly this with
+			// qwen/qwen3.6-27b via LM Studio (4/4 calls billed 39-54
+			// output tokens with Content == "").
+			ReasoningContent string `json:"reasoning_content"`
+			// Reasoning is an alternate field name a minority of other
+			// OpenAI-compatible servers use for the same purpose,
+			// checked only when both Content and ReasoningContent are
+			// empty — see responseText.
+			Reasoning string `json:"reasoning"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`

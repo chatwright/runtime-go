@@ -42,7 +42,7 @@ provider, err := openai.New(openai.Config{
 | `BaseURL` | Yes | e.g. `http://localhost:11434/v1` (Ollama), `http://localhost:1234/v1` (LM Studio). No package default — unlike a single hosted vendor, every OpenAI-compatible server lives at its own address. `New` returns `ErrMissingBaseURL` if empty. |
 | `Model` | Yes | e.g. `qwen3.6:latest`. No package default either — each server's model catalogue is whatever the developer pulled/loaded locally. `New` returns `ErrMissingModel` if empty. |
 | `APIKey` | No | Sent as `Authorization: Bearer <APIKey>` only when non-empty. Local servers (Ollama, LM Studio) do not need one. |
-| `MaxTokens` | No | Defaults to `openai.DefaultMaxTokens` (1024). |
+| `MaxTokens` | No | Defaults to `openai.DefaultMaxTokens` (2048 — see its doc comment for the arena evidence behind the value). |
 | `HTTPClient` | No | Defaults to `http.DefaultClient`. Tests point this at a fake `http.RoundTripper`, or drive a real `httptest.Server` and set `BaseURL` to it. |
 | `Now` | No | Defaults to `time.Now`; only used to measure `Usage.Latency`. |
 
@@ -75,6 +75,32 @@ actually served the last call (`openai.ModeJSONSchema` or
 `openai.ModeJSONObjectFallback`) — a test/diagnostic hook, never required
 for correct use.
 
+## Reasoning models and `reasoning_content`
+
+Some reasoning models served through an OpenAI-compatible endpoint route
+their entire reply — including the proposal JSON the response contract
+asks for — into `message.reasoning_content` instead of `message.content`,
+leaving `content` empty while the server still bills output tokens for it.
+(`qwen/qwen3.6-27b` via LM Studio did this on 4/4 calls in the first
+actor-model arena run — see
+[`chatwright/runtime-go#3`](https://github.com/chatwright/runtime-go/issues/3).)
+
+`Propose` reads the first non-empty field in this order — the first hit
+wins outright and later fields are never even inspected:
+
+1. `message.content` — the normal path; unchanged behaviour whenever this
+   is non-empty.
+2. `message.reasoning_content` — the LM Studio/DeepSeek-style field name.
+3. `message.reasoning` — an alternate name a minority of other servers use.
+
+Text recovered from either reasoning field goes through the exact same
+strict, one-repair-attempt parse and contract validation as `content`
+does (see `response.go`'s `responseText`/`parseWireProposal`) — this
+package still never fabricates a `Proposal` out of reasoning prose that
+merely looks plausible. A reasoning field that does not hold a valid
+proposal surfaces as the same typed `*openai.InvalidResponseError`, with
+its `Source` field naming which field the text came from.
+
 ## Error taxonomy
 
 | Go type | When | Notes |
@@ -82,7 +108,7 @@ for correct use.
 | `*openai.AuthenticationError` | HTTP 401/403 | Bad, missing or under-scoped `APIKey`. Not retryable without fixing the key; no `json_object` fallback attempted (a schema rejection this is not). |
 | `*openai.RateLimitError` | HTTP 429 | Retryable after backoff — this package does not retry internally. No fallback attempted either. |
 | `*openai.FallbackFailedError` | Both the `json_schema` and the `json_object` attempts failed at the HTTP/transport level | Wraps both underlying errors (`Unwrap() []error`). |
-| `*openai.InvalidResponseError` | Unparseable/contract-violating reply, or a response with no choices/content, from either attempt | Carries `Raw` (truncated) and `FinishReason`. Never a fabricated `Proposal`. |
+| `*openai.InvalidResponseError` | Unparseable/contract-violating reply, or a response with no usable text in `content`/`reasoning_content`/`reasoning`, from either attempt | Carries `Raw` (truncated), `FinishReason` (called out explicitly, with a truncation hint, when `"length"`), and `Source` (which field `Raw` came from — named in the message only for a reasoning field, never for the normal `content` path). Never a fabricated `Proposal`. |
 | wrapped generic error | A connection-level failure (DNS, connection refused, cancelled context) before any HTTP response at all | No fallback attempted — there is nothing to fall back from. |
 
 ## Usage and cost
@@ -125,9 +151,13 @@ follows unchanged.
 ## Testing
 
 - `go test ./actor/openai/...` runs the full suite — request shape, all
-  four proposal kinds, the JSON-repair path, the `json_schema`→
-  `json_object` fallback (and its own failure path), the full error
-  taxonomy, missing-usage/missing-model degradation, cassette
+  four proposal kinds, the JSON-repair path, the `reasoning_content`/
+  `reasoning` fallback fields (valid JSON, garbage, and `content`-wins
+  precedence — see `TestPropose_ReasoningContentFallback_ValidJSON` and
+  neighbours in `provider_test.go`), the `finish_reason=length` truncation
+  hint (`TestPropose_FinishReasonLength_SurfacesInError`), the
+  `json_schema`→`json_object` fallback (and its own failure path), the
+  full error taxonomy, missing-usage/missing-model degradation, cassette
   record/replay, and a greetbot campaign end-to-end proof whose bundle
   validates against the `chatwright.dev/sdk` module's own
   `formats/run-bundle/v1/schema.json` (resolved via `go list -m`, see

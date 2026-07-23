@@ -22,44 +22,93 @@ type wireProposal struct {
 	Rationale string `json:"rationale"`
 }
 
-// proposalFromResponse extracts resp's first choice's message content,
-// parses it as a wireProposal (with one repair attempt — see
-// parseWireProposal), and converts it to an actor.Proposal. It never
-// returns a non-error actor.Proposal built from an unparseable or
-// contract-violating reply: every failure path returns
-// *InvalidResponseError instead.
+// Field names responseText can report as its source return value — see
+// that function's doc comment for the precedence between them.
+const (
+	fieldContent          = "content"
+	fieldReasoningContent = "reasoning_content"
+	fieldReasoning        = "reasoning"
+)
+
+// proposalFromResponse extracts resp's first choice's reply text (see
+// responseText for which field that comes from), parses it as a
+// wireProposal (with one repair attempt — see parseWireProposal), and
+// converts it to an actor.Proposal. It never returns a non-error
+// actor.Proposal built from an unparseable or contract-violating reply:
+// every failure path returns *InvalidResponseError instead, naming the
+// field the text was read from and the response's finish_reason so a
+// developer/loop record can see exactly what was found and why it was
+// rejected — never a guess in its place.
 func proposalFromResponse(resp *chatCompletionResponse, prompt actor.Prompt) (actor.Proposal, error) {
-	raw, finishReason, err := responseText(resp)
+	raw, source, finishReason, err := responseText(resp)
 	if err != nil {
 		return actor.Proposal{}, &InvalidResponseError{FinishReason: finishReason, Err: err}
 	}
 
 	wp, err := parseWireProposal(raw)
 	if err != nil {
-		return actor.Proposal{}, &InvalidResponseError{Raw: raw, FinishReason: finishReason, Err: err}
+		return actor.Proposal{}, &InvalidResponseError{Raw: raw, FinishReason: finishReason, Source: source, Err: err}
 	}
 
 	proposal, err := wp.toProposal(prompt)
 	if err != nil {
-		return actor.Proposal{}, &InvalidResponseError{Raw: raw, FinishReason: finishReason, Err: err}
+		return actor.Proposal{}, &InvalidResponseError{Raw: raw, FinishReason: finishReason, Source: source, Err: err}
 	}
 	return proposal, nil
 }
 
-// responseText returns resp's first choice's message content, and that
-// choice's finish_reason. A response can carry no usable content at all —
-// no choices, or a choice whose message content is empty (e.g. a content
-// filter refusal, or a reply cut off by finish_reason "length" before any
-// text landed) — either way there is nothing to parse.
-func responseText(resp *chatCompletionResponse) (raw, finishReason string, err error) {
+// responseText returns the text this package attempts to parse as a
+// wireProposal from resp's first choice, which field that text came from
+// (source — one of fieldContent, fieldReasoningContent or fieldReasoning),
+// and that choice's finish_reason.
+//
+// Field precedence, checked in this exact order — the first non-empty
+// field wins outright and every later one is never even inspected, never
+// merged or concatenated with it:
+//
+//  1. message.content — the normal path used by every non-reasoning model
+//     and by most reasoning models too. Whenever this is non-empty,
+//     nothing below is consulted, so a reasoning field present alongside
+//     non-empty content changes no observable behaviour at all.
+//  2. message.reasoning_content — the LM Studio/DeepSeek-style field name
+//     some reasoning models route their ENTIRE reply into (thinking AND
+//     final answer together), leaving content empty. See
+//     chatwright/runtime-go#3: the first actor-model arena run hit exactly
+//     this with qwen/qwen3.6-27b via LM Studio — content=="" on 4/4 calls
+//     while the server still billed 39-54 output tokens, meaning a real
+//     reply existed but landed in a field this package never read.
+//  3. message.reasoning — a fallback field name a minority of other
+//     OpenAI-compatible servers use for the same purpose. Checked only
+//     when both content and reasoning_content are empty.
+//
+// Text recovered from either reasoning field is NOT trusted any more than
+// content is: it still goes through the exact same parseWireProposal (one
+// repair attempt) and wireProposal.toProposal (contract validation) as
+// content does — see proposalFromResponse. A reasoning field full of prose
+// ("Let me think about this...") rather than the proposal JSON itself
+// fails that same validation and surfaces as a normal
+// *InvalidResponseError; this package never synthesises a Proposal out of
+// reasoning text that merely looks plausible.
+//
+// A response can carry no usable text in ANY of the three fields at all —
+// no choices, a content-filter refusal, or a reply cut off by
+// finish_reason "length" before any text landed anywhere — in which case
+// err is non-nil and raw/source are both "".
+func responseText(resp *chatCompletionResponse) (raw, source, finishReason string, err error) {
 	if len(resp.Choices) == 0 {
-		return "", "", errors.New("response has no choices")
+		return "", "", "", errors.New("response has no choices")
 	}
 	choice := resp.Choices[0]
-	if choice.Message.Content == "" {
-		return "", choice.FinishReason, fmt.Errorf("response's first choice has empty content (finish_reason=%s)", choice.FinishReason)
+	switch {
+	case choice.Message.Content != "":
+		return choice.Message.Content, fieldContent, choice.FinishReason, nil
+	case choice.Message.ReasoningContent != "":
+		return choice.Message.ReasoningContent, fieldReasoningContent, choice.FinishReason, nil
+	case choice.Message.Reasoning != "":
+		return choice.Message.Reasoning, fieldReasoning, choice.FinishReason, nil
+	default:
+		return "", "", choice.FinishReason, fmt.Errorf("response's first choice has empty content (finish_reason=%s)", choice.FinishReason)
 	}
-	return choice.Message.Content, choice.FinishReason, nil
 }
 
 // parseWireProposal parses raw as a wireProposal, with one repair attempt:

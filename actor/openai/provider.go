@@ -34,6 +34,27 @@
 // Provider.LastResponseFormatMode — useful for tests and diagnostics, never
 // required for correct use.
 //
+// # Reasoning models and the reasoning_content field
+//
+// Some reasoning models served through an OpenAI-compatible endpoint (LM
+// Studio and DeepSeek-style servers observed so far) route their entire
+// reply — including the proposal JSON the response contract asks for —
+// into message.reasoning_content instead of message.content, leaving
+// content empty while still billing output tokens for it (see
+// chatwright/runtime-go#3: qwen/qwen3.6-27b via LM Studio did this on 4/4
+// calls in the first actor-model arena run). Propose reads that text
+// rather than treating an empty content as "no reply": see response.go's
+// responseText for the exact field precedence (content, then
+// reasoning_content, then the alternate name reasoning — each checked only
+// when every earlier one is empty; content winning outright whenever it is
+// non-empty leaves existing behaviour unchanged). Text recovered from a
+// reasoning field is parsed and validated through the exact same strict,
+// one-repair-attempt path as content — see response.go — so this package
+// still never fabricates a Proposal from reasoning prose that merely looks
+// plausible; a reasoning field that does not hold a valid proposal
+// surfaces as the same typed *InvalidResponseError, naming which field
+// (Source) it came from.
+//
 // # Usage and cost
 //
 // Usage.Model, InputTokens and OutputTokens are read from the response;
@@ -62,9 +83,16 @@ import (
 )
 
 // DefaultMaxTokens is the default Config.MaxTokens: generous headroom for a
-// short rationale plus the fixed JSON scaffolding, matching
-// actor/anthropic's own DefaultMaxTokens.
-const DefaultMaxTokens = 1024
+// short rationale plus the fixed JSON scaffolding. Originally 1024, matching
+// actor/anthropic's own DefaultMaxTokens; raised to 2048 after the first
+// actor-model arena run (chatwright/backstage
+// research/model-arena-2026-07-23) observed finish_reason=length truncating
+// replies mid-JSON at 1024 across multiple cells — the arena reran every
+// cell at 2048 as a fairness fix, and that value is now this package's own
+// default too. Config.MaxTokens still overrides it per Provider; see
+// InvalidResponseError, which now names finish_reason=length explicitly
+// when it is the culprit.
+const DefaultMaxTokens = 2048
 
 // ErrMissingBaseURL means New was called with an empty Config.BaseURL.
 // Unlike Anthropic's single hosted API, an OpenAI-compatible provider has
