@@ -466,9 +466,11 @@ func (e *Emulator) handleEditMessageText(w http.ResponseWriter, r *http.Request,
 		writeError(w, "message to edit not found")
 		return
 	}
-	if markup == nil {
-		markup = prev.markup // editMessageText without reply_markup keeps the existing keyboard, like real Telegram
-	}
+	// editMessageText without reply_markup REMOVES the existing keyboard —
+	// real Telegram only keeps a message's inline keyboard when the edit
+	// call explicitly re-sends reply_markup; omitting it clears the keyboard
+	// (decision 0015, cross-repo parity register docs/runtime-parity.md).
+	// markup is already nil here in that case, so no fallback to prev.markup.
 	at := time.Now()
 	e.appendLocked(journalEntry{
 		chatID: chatID, dir: fromBot, kind: kindText,
