@@ -193,6 +193,99 @@ func TestHandleEditMessageText_JSONBody(t *testing.T) {
 	}
 }
 
+// TestHandleEditMessageText_OmittedReplyMarkupClearsKeyboard proves real
+// Telegram fidelity (decision 0015, docs/runtime-parity.md): editMessageText
+// without reply_markup does not carry the message's previous inline keyboard
+// forward — it clears it. A keyboard survives an edit only when the edit
+// call explicitly re-sends reply_markup.
+func TestHandleEditMessageText_OmittedReplyMarkupClearsKeyboard(t *testing.T) {
+	e := NewEmulator()
+	t.Cleanup(e.Close)
+
+	_, sendEnv := postJSON(t, e.BotAPIURL()+"/botTEST/sendMessage", map[string]any{
+		"chat_id": 7,
+		"text":    "Pick one",
+		"reply_markup": map[string]any{
+			"inline_keyboard": [][]map[string]any{{{"text": "Yes", "callback_data": "cb_yes"}}},
+		},
+	})
+	sendResult := resultOf(t, sendEnv)
+	msgID := int(sendResult["message_id"].(float64))
+
+	status, _ := postJSON(t, e.BotAPIURL()+"/botTEST/editMessageText", map[string]any{
+		"chat_id":    7,
+		"message_id": msgID,
+		"text":       "Picked",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("editMessageText status = %d, want %d", status, http.StatusOK)
+	}
+
+	msg, ok := e.WaitForEdit(7, msgID, 0, 0)
+	if !ok {
+		t.Fatalf("WaitForEdit did not observe the edit")
+	}
+	if len(msg.Actions) != 0 {
+		t.Fatalf("edited message Actions = %+v, want none: omitting reply_markup on the edit must clear the keyboard, not keep it", msg.Actions)
+	}
+
+	journal, err := e.Journal(7)
+	if err != nil {
+		t.Fatalf("Journal: %v", err)
+	}
+	var found bool
+	for _, en := range journal {
+		if en.MessageID == msgID && en.Version == 1 {
+			found = true
+			if len(en.Actions) != 0 {
+				t.Fatalf("edit journal entry Actions = %+v, want none", en.Actions)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no version-1 journal entry found for message %d", msgID)
+	}
+}
+
+// TestHandleEditMessageText_ReplyMarkupUsedVerbatim proves the converse of
+// the above: when the edit call itself re-sends reply_markup, that new
+// keyboard is what the edited message carries — not a merge with the
+// previous one.
+func TestHandleEditMessageText_ReplyMarkupUsedVerbatim(t *testing.T) {
+	e := NewEmulator()
+	t.Cleanup(e.Close)
+
+	_, sendEnv := postJSON(t, e.BotAPIURL()+"/botTEST/sendMessage", map[string]any{
+		"chat_id": 7,
+		"text":    "Pick one",
+		"reply_markup": map[string]any{
+			"inline_keyboard": [][]map[string]any{{{"text": "Yes", "callback_data": "cb_yes"}}},
+		},
+	})
+	sendResult := resultOf(t, sendEnv)
+	msgID := int(sendResult["message_id"].(float64))
+
+	status, _ := postJSON(t, e.BotAPIURL()+"/botTEST/editMessageText", map[string]any{
+		"chat_id":    7,
+		"message_id": msgID,
+		"text":       "Pick again",
+		"reply_markup": map[string]any{
+			"inline_keyboard": [][]map[string]any{{{"text": "No", "callback_data": "cb_no"}}},
+		},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("editMessageText status = %d, want %d", status, http.StatusOK)
+	}
+
+	msg, ok := e.WaitForEdit(7, msgID, 0, 0)
+	if !ok {
+		t.Fatalf("WaitForEdit did not observe the edit")
+	}
+	if len(msg.Actions) != 1 || len(msg.Actions[0]) != 1 || msg.Actions[0][0].Label != "No" {
+		t.Fatalf("edited message Actions = %+v, want a single [No] row", msg.Actions)
+	}
+}
+
 func TestHandleEditMessageText_MissingFields_Returns400(t *testing.T) {
 	e := NewEmulator()
 	t.Cleanup(e.Close)
