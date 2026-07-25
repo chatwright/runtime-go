@@ -3,7 +3,7 @@ module chatwright.dev/runtime
 go 1.26.1
 
 require (
-	chatwright.dev/sdk v0.2.1-0.20260725100813-4f7dd7b98096
+	chatwright.dev/sdk v0.3.0
 	github.com/anthropics/anthropic-sdk-go v1.59.0
 	github.com/bots-go-framework/bots-api-telegram v0.15.0
 	github.com/bots-go-framework/bots-api-whatsapp v0.3.1

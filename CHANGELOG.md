@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-07-25)
 
 - Renamed `observe.Verdict` to `observe.Freshness` (values unchanged:
   `fresh`/`stale`), and `actor.ValidationOutcome.Verdict` to
