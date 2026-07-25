@@ -19,7 +19,7 @@
       }
     },
     {
-      "key": "a7e573304992ea90a73e9c58cb37ba470c55f839675750a51ebde04a8385a4a6",
+      "key": "8d43052384d8dd1e73abe9fb2a20f2f104ece04fadd92109f217cdd67307d4ea",
       "promptSummary": "goal=language-onboarding-arena task=language-onboarding observation#3 messages=2 history=1",
       "proposal": {
         "kind": "click",
@@ -36,7 +36,7 @@
       }
     },
     {
-      "key": "48661ee4b0a7b575a0a60dd821fbfe556d7097d9d079d63389466e036896a1a5",
+      "key": "397be59bbcdeee8f55ebcd6c136d4abaca7640e4fb6d1192a86368cd9aa571d7",
       "promptSummary": "goal=language-onboarding-arena task=language-onboarding observation#5 messages=2 history=2",
       "proposal": {
         "kind": "send-text",
@@ -53,7 +53,7 @@
       }
     },
     {
-      "key": "3fbddf6b0dac23867fec75437b06e5a78185cdb64e6345d71b0557e7c3cc0120",
+      "key": "947a89f5f87cf95e0ec3a41171ad48b07c575e217a1df1c91e12332938f7eb6c",
       "promptSummary": "goal=language-onboarding-arena task=language-onboarding observation#7 messages=4 history=3",
       "proposal": {
         "kind": "task-done",

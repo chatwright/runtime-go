@@ -118,7 +118,7 @@ func renderHistory(b *strings.Builder, history []actor.LoopEvent) {
 	for i, ev := range history {
 		fmt.Fprintf(b, "%d. proposed %s", i+1, describeProposal(ev.Proposal))
 		if ev.Validation.Checked {
-			fmt.Fprintf(b, "; validation=%s (%s)", ev.Validation.Verdict, ev.Validation.Reason)
+			fmt.Fprintf(b, "; validation=%s (%s)", ev.Validation.Freshness, ev.Validation.Reason)
 		}
 		fmt.Fprintf(b, "; outcome=%s", ev.Action.Kind)
 		if ev.Action.Detail != "" {

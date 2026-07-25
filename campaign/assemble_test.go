@@ -38,7 +38,7 @@ func TestReportClassifiesFindings(t *testing.T) {
 		{Index: 1, TaskID: "onboarding", ObservationSequence: 2, Action: actor.ActionOutcome{Kind: actor.ActionTaskCompleted}},
 
 		{Index: 2, TaskID: "add-items", ObservationSequence: 3,
-			Validation: actor.ValidationOutcome{Checked: true, Verdict: observe.VerdictStale, Reason: "action no longer available"},
+			Validation: actor.ValidationOutcome{Checked: true, Freshness: observe.FreshnessStale, Reason: "action no longer available"},
 			Action:     actor.ActionOutcome{Kind: actor.ActionSkippedInvalid, Detail: "stale"}},
 		{Index: 3, TaskID: "add-items", ObservationSequence: 3, Action: actor.ActionOutcome{Kind: actor.ActionTaskGivenUp}},
 
@@ -127,7 +127,7 @@ func TestReportLinksEvidenceBySequence(t *testing.T) {
 	events := []actor.LoopEvent{
 		{Index: 0, TaskID: "add-items", ObservationSequence: 10, Action: actor.ActionOutcome{Kind: actor.ActionExecuted}},
 		{Index: 1, TaskID: "add-items", ObservationSequence: 11,
-			Validation: actor.ValidationOutcome{Checked: true, Verdict: observe.VerdictStale},
+			Validation: actor.ValidationOutcome{Checked: true, Freshness: observe.FreshnessStale},
 			Action:     actor.ActionOutcome{Kind: actor.ActionSkippedInvalid}},
 		{Index: 2, TaskID: "add-items", ObservationSequence: 12,
 			Action: actor.ActionOutcome{Kind: actor.ActionResolutionFailed}},

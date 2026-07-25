@@ -250,11 +250,11 @@ func TestStaleActionProposalIsDetected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	if fresh.Verdict != observe.VerdictFresh {
-		t.Fatalf("verdict before any change = %v, want %v, reason: %s", fresh.Verdict, observe.VerdictFresh, fresh.Reason)
+	if fresh.Freshness != observe.FreshnessFresh {
+		t.Fatalf("freshness before any change = %v, want %v, reason: %s", fresh.Freshness, observe.FreshnessFresh, fresh.Reason)
 	}
 	if fresh.Current == nil || fresh.Current.Label != "Yes" {
-		t.Fatalf("fresh verdict Current = %+v, want Label %q", fresh.Current, "Yes")
+		t.Fatalf("fresh result Current = %+v, want Label %q", fresh.Current, "Yes")
 	}
 
 	// The bot replaces its available actions.
@@ -264,22 +264,22 @@ func TestStaleActionProposalIsDetected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	if stale.Verdict != observe.VerdictStale {
-		t.Fatalf("verdict after the message was edited = %v, want %v", stale.Verdict, observe.VerdictStale)
+	if stale.Freshness != observe.FreshnessStale {
+		t.Fatalf("freshness after the message was edited = %v, want %v", stale.Freshness, observe.FreshnessStale)
 	}
 	if stale.Reason == "" {
-		t.Fatalf("stale verdict has no reason")
+		t.Fatalf("stale result has no reason")
 	}
 	if stale.Current != nil {
-		t.Fatalf("stale verdict Current = %+v, want nil", stale.Current)
+		t.Fatalf("stale result Current = %+v, want nil", stale.Current)
 	}
 
 	unknown, err := engine.Validate(observe.ActionProposal{ObservationSequence: 999, ActionID: targetActionID})
 	if err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	if unknown.Verdict != observe.VerdictStale {
-		t.Fatalf("verdict for an unknown observation sequence = %v, want %v", unknown.Verdict, observe.VerdictStale)
+	if unknown.Freshness != observe.FreshnessStale {
+		t.Fatalf("freshness for an unknown observation sequence = %v, want %v", unknown.Freshness, observe.FreshnessStale)
 	}
 }
 

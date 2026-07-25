@@ -193,7 +193,7 @@ func coverageGapFinding(taskID, summary string) Finding {
 // classify).
 func navigationFailureEvidence(events []actor.LoopEvent) (sequences []int64, indexes []int, ok bool) {
 	for _, e := range events {
-		stale := e.Validation.Checked && e.Validation.Verdict == observe.VerdictStale
+		stale := e.Validation.Checked && e.Validation.Freshness == observe.FreshnessStale
 		invalid := e.Action.Kind == actor.ActionSkippedInvalid || e.Action.Kind == actor.ActionResolutionFailed
 		if stale || invalid {
 			sequences = append(sequences, e.ObservationSequence)

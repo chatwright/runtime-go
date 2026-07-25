@@ -670,8 +670,8 @@ func (l *Loop) actOn(ctx context.Context, task goal.Task, obs *observe.Observati
 		if verr != nil {
 			return false, ActionOutcome{}, ValidationOutcome{}, nil, fmt.Errorf("actor: validate: %w", verr)
 		}
-		validation = ValidationOutcome{Checked: true, Verdict: result.Verdict, Reason: result.Reason}
-		if result.Verdict != observe.VerdictFresh {
+		validation = ValidationOutcome{Checked: true, Freshness: result.Freshness, Reason: result.Reason}
+		if result.Freshness != observe.FreshnessFresh {
 			return false, ActionOutcome{Kind: ActionSkippedInvalid, Detail: result.Reason}, validation, nil, nil
 		}
 

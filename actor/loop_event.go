@@ -52,15 +52,15 @@ type LoopEvent struct {
 	ProposeError string `json:"proposeError,omitempty"`
 }
 
-// ValidationOutcome is the loop's validate-step verdict for one proposal,
+// ValidationOutcome is the loop's validate-step outcome for one proposal,
 // carrying observe.Engine.Validate's own result verbatim when it applies.
 type ValidationOutcome struct {
 	// Checked is false for proposal kinds observe.Validate does not apply
-	// to (ProposeSendText, ProposeTaskDone, ProposeGiveUp); Verdict and
+	// to (ProposeSendText, ProposeTaskDone, ProposeGiveUp); Freshness and
 	// Reason are meaningless when Checked is false.
-	Checked bool            `json:"checked"`
-	Verdict observe.Verdict `json:"verdict"`
-	Reason  string          `json:"reason"`
+	Checked   bool              `json:"checked"`
+	Freshness observe.Freshness `json:"freshness"`
+	Reason    string            `json:"reason"`
 }
 
 // ActionOutcomeKind classifies what happened when the loop acted on a

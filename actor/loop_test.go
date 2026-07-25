@@ -199,14 +199,14 @@ func TestInvalidProposalIsRecordedAndReprompted(t *testing.T) {
 	if events[0].Action.Kind != actor.ActionSkippedInvalid {
 		t.Fatalf("event 0 action = %v, want ActionSkippedInvalid", events[0].Action.Kind)
 	}
-	if !events[0].Validation.Checked || events[0].Validation.Verdict != observe.VerdictStale {
-		t.Fatalf("event 0 validation = %+v, want Checked with VerdictStale", events[0].Validation)
+	if !events[0].Validation.Checked || events[0].Validation.Freshness != observe.FreshnessStale {
+		t.Fatalf("event 0 validation = %+v, want Checked with FreshnessStale", events[0].Validation)
 	}
 	if events[1].Action.Kind != actor.ActionExecuted {
 		t.Fatalf("event 1 action = %v, want ActionExecuted", events[1].Action.Kind)
 	}
-	if !events[1].Validation.Checked || events[1].Validation.Verdict != observe.VerdictFresh {
-		t.Fatalf("event 1 validation = %+v, want Checked with VerdictFresh", events[1].Validation)
+	if !events[1].Validation.Checked || events[1].Validation.Freshness != observe.FreshnessFresh {
+		t.Fatalf("event 1 validation = %+v, want Checked with FreshnessFresh", events[1].Validation)
 	}
 	if events[2].Action.Kind != actor.ActionTaskCompleted {
 		t.Fatalf("event 2 action = %v, want ActionTaskCompleted", events[2].Action.Kind)
