@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Renamed `observe.Verdict` to `observe.Freshness` (values unchanged:
+  `fresh`/`stale`), and `actor.ValidationOutcome.Verdict` to
+  `actor.ValidationOutcome.Freshness` (wire tag `verdict` → `freshness`).
+  This resolves a vocabulary collision recorded in the `chatwright/chatwright`
+  glossary: "verdict" now names only the AI-judged-assertion outcome; the
+  click-validity check this type carries is a validity check against the
+  engine's own state, not a judgement against a criterion, so it is
+  "freshness". Requires `chatwright.dev/sdk` >= the release carrying the
+  matching rename (see that module's own CHANGELOG). A side effect worth
+  knowing about if you maintain your own cassettes: the field rename changes
+  `actor.CassetteProvider`'s deterministic prompt-hash key for any recorded
+  turn whose `Prompt.History` includes a checked validation — regenerate
+  affected cassettes with their `//go:build generate_*` recorder rather than
+  hand-editing keys (`testdata/cassettes/greetbot-language-onboarding.json`
+  regenerated here).
+
 ## 0.4.0 (2026-07-25)
 
 - **Self-contained scenario documents** (new `scenario` package;

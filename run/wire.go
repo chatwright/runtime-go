@@ -167,9 +167,9 @@ func wireUsage(u actor.Usage) sdk.Usage {
 // → sdk.ValidationOutcome); the sdk owns the shape.
 func wireValidationOutcome(v actor.ValidationOutcome) sdk.ValidationOutcome {
 	return sdk.ValidationOutcome{
-		Checked: v.Checked,
-		Verdict: sdk.Verdict(v.Verdict),
-		Reason:  v.Reason,
+		Checked:   v.Checked,
+		Freshness: sdk.Freshness(v.Freshness),
+		Reason:    v.Reason,
 	}
 }
 
