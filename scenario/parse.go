@@ -3,6 +3,7 @@ package scenario
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -64,8 +65,21 @@ func Parse(data []byte) (*Document, Report, error) {
 
 	var doc Document
 	dec := json.NewDecoder(strings.NewReader(string(data)))
+	// DisallowUnknownFields: an unrecognised member is a rejection, not a
+	// silent no-op — the format's own "no member is silently ignored"
+	// rule (see the README's "Parsing is inert, and refusal is explicit"
+	// section) applies just as much to a typo'd or made-up member as it
+	// does to a whole unsupported capability. encoding/json's own error
+	// for this ("json: unknown field \"x\"") names the field but not a
+	// full JSON pointer to it — a known, stdlib-imposed limitation; see
+	// unknownFieldName.
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(&doc); err != nil {
-		report.add(errorIssue("invalid-shape", "", "document does not match the scenario-document/v1 shape"))
+		if field, ok := unknownFieldName(err); ok {
+			report.add(errorIssue("unknown-member", "", fmt.Sprintf("unrecognised member %q is not part of the scenario-document/v1 shape", field)))
+		} else {
+			report.add(errorIssue("invalid-shape", "", "document does not match the scenario-document/v1 shape"))
+		}
 		return nil, report, report.asError()
 	}
 
@@ -115,4 +129,21 @@ func escapePointerToken(s string) string {
 	s = strings.ReplaceAll(s, "~", "~0")
 	s = strings.ReplaceAll(s, "/", "~1")
 	return s
+}
+
+// unknownFieldNamePattern matches encoding/json's own DisallowUnknownFields
+// error text — `json: unknown field "x"` — the only way to recover the
+// offending member name, since *json.Decoder exposes no structured error
+// type for it.
+var unknownFieldNamePattern = regexp.MustCompile(`^json: unknown field "(.+)"$`)
+
+// unknownFieldName extracts the offending member name from a
+// DisallowUnknownFields decode error, or ("", false) for any other decode
+// error (a genuine syntax/type error, reported generically instead).
+func unknownFieldName(err error) (string, bool) {
+	m := unknownFieldNamePattern.FindStringSubmatch(err.Error())
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
 }

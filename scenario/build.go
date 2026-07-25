@@ -321,10 +321,12 @@ func buildBotEndpoint(doc *Document, opts BuildOptions, secrets SecretResolver, 
 				emu.Close()
 				return nil, sdk.Actor{}, nil, herr
 			}
-			client = &http.Client{
-				Transport: headerRoundTripper{base: transportOf(client), headers: headers},
-				Timeout:   client.Timeout,
-			}
+			// Shallow-copy client and override only Transport, so every
+			// other field a caller configured (CheckRedirect, Jar, ...) —
+			// not just Timeout — survives header injection.
+			withHeaders := *client
+			withHeaders.Transport = headerRoundTripper{base: transportOf(client), headers: headers}
+			client = &withHeaders
 		}
 		emu.SetWebhook(b.URL, client)
 	}

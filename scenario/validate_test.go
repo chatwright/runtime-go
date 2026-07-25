@@ -198,3 +198,61 @@ func TestParse_AbsentCeilingAndVerifyAreWarningsNotErrors(t *testing.T) {
 		t.Error("report.Warnings() missing no-independent-verification")
 	}
 }
+
+// TestParse_UnknownMemberIsRejected guards against a typo'd or made-up
+// member silently decoding to nothing — the format's own "no member is
+// silently ignored" rule applies to an unrecognised field, not only to a
+// whole unsupported capability (found in review of #12).
+func TestParse_UnknownMemberIsRejected(t *testing.T) {
+	doc := strings.Replace(validBaseDocument, `"title": "t",`, `"title": "t", "titel": "typo",`, 1)
+	_, report, err := Parse([]byte(doc))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want rejection for an unrecognised member")
+	}
+	issue := mustErrorCode(t, report, "unknown-member")
+	if !strings.Contains(issue.Message, `"titel"`) {
+		t.Errorf("issue.Message = %q, want it to name the unrecognised member %q", issue.Message, "titel")
+	}
+}
+
+// TestParse_VerifyConditionValueShapeIsChecked guards Condition.Value shape
+// checking beyond the regex op — an exact/contains value that is neither a
+// string nor a string array, and a non-boolean value on the "edited"
+// field, are both rejected at Parse time rather than surfacing later as a
+// plain Go error out of CompileVerify (found in review of #12).
+func TestParse_VerifyConditionValueShapeIsChecked(t *testing.T) {
+	withVerify := func(condition string) string {
+		doc := strings.TrimSuffix(validBaseDocument, "\n}")
+		return doc + `,
+  "verify": {"chat": "main", "metDetail": "ok", "journal": [
+    {"id": "e1", "unmetDetail": "no", "all": [` + condition + `]}
+  ]}
+}`
+	}
+
+	t.Run("exact value must be string or string array", func(t *testing.T) {
+		doc := withVerify(`{"field": "text", "op": "exact", "value": 42}`)
+		_, report, err := Parse([]byte(doc))
+		if err == nil {
+			t.Fatal("Parse() error = nil, want rejection for a numeric exact value")
+		}
+		mustErrorCode(t, report, "invalid-shape")
+	})
+
+	t.Run("edited value must be boolean", func(t *testing.T) {
+		doc := withVerify(`{"field": "edited", "op": "exact", "value": "true"}`)
+		_, report, err := Parse([]byte(doc))
+		if err == nil {
+			t.Fatal("Parse() error = nil, want rejection for a string value on the boolean \"edited\" field")
+		}
+		mustErrorCode(t, report, "invalid-shape")
+	})
+
+	t.Run("valid conditions are accepted", func(t *testing.T) {
+		doc := withVerify(`{"field": "text", "op": "exact", "value": ["a", "b"]}`)
+		_, report, err := Parse([]byte(doc))
+		if err != nil {
+			t.Fatalf("Parse() error = %v, want acceptance for a string-array exact value; report=%+v", err, report)
+		}
+	})
+}

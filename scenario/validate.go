@@ -1,6 +1,7 @@
 package scenario
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -418,9 +419,11 @@ func validateVerify(doc *Document, report *Report, chatIDs map[string]bool) {
 }
 
 func validateCondition(c Condition, pointer string, report *Report) {
+	validField := true
 	switch c.Field {
 	case FieldKind, FieldDirection, FieldText, FieldEdited:
 	default:
+		validField = false
 		report.add(errorIssue("invalid-shape", pointer+"/field", fmt.Sprintf("unrecognised field %q", c.Field)))
 	}
 
@@ -434,7 +437,19 @@ func validateCondition(c Condition, pointer string, report *Report) {
 		report.add(errorIssue("invalid-shape", pointer+"/op", fmt.Sprintf("unrecognised op %q", c.Op)))
 	}
 
-	if c.Op == OpRegex {
+	if !validField {
+		return // c.Field's own shape (bool vs string) is unknown; nothing more to check about Value.
+	}
+
+	switch {
+	case c.Field == FieldEdited:
+		// Every op on "edited" (only "exact" survives the check above) needs
+		// a bare JSON boolean — never a string/number/object.
+		var b bool
+		if err := json.Unmarshal(c.Value, &b); err != nil {
+			report.add(errorIssue("invalid-shape", pointer+"/value", "a condition on \"edited\" requires a boolean value"))
+		}
+	case c.Op == OpRegex:
 		var pattern string
 		if err := jsonUnmarshalString(c.Value, &pattern); err != nil {
 			report.add(errorIssue("invalid-shape", pointer+"/value", "regex op requires a single string pattern"))
@@ -442,6 +457,13 @@ func validateCondition(c Condition, pointer string, report *Report) {
 			report.add(errorIssue("regex-unsupported-subset", pointer+"/value", "pattern uses backreferences or lookaround, outside the RE2 ∩ JavaScript subset this format supports"))
 		} else if _, err := regexp.Compile(pattern); err != nil {
 			report.add(errorIssue("regex-unsupported-subset", pointer+"/value", "pattern does not compile as RE2"))
+		}
+	case c.Op == OpExact || c.Op == OpContains:
+		// exact/contains accept a single string or an array of strings
+		// (any-of) — see decodeStringOrStringList, shared with CompileVerify
+		// so Parse and Build agree on exactly the same accepted shape.
+		if _, err := decodeStringOrStringList(c.Value); err != nil {
+			report.add(errorIssue("invalid-shape", pointer+"/value", fmt.Sprintf("op %q requires a string or an array of strings", c.Op)))
 		}
 	}
 }
