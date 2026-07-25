@@ -1,0 +1,73 @@
+{
+  "providerConfig": "greetbot-conformance-v1",
+  "entries": [
+    {
+      "key": "44fec4a63bd47516ec3c17fa85551258a0fad025c2e0d4a190e3c0b508cfd9bc",
+      "promptSummary": "goal=language-onboarding-arena task=language-onboarding observation#1 messages=0 history=0",
+      "proposal": {
+        "kind": "send-text",
+        "text": "/start",
+        "actionId": "",
+        "observationSequence": 0,
+        "rationale": "open the language picker"
+      },
+      "usage": {
+        "model": "scripted-conformance-v1",
+        "inputTokens": 12,
+        "outputTokens": 4,
+        "latencyNanoseconds": 0
+      }
+    },
+    {
+      "key": "a7e573304992ea90a73e9c58cb37ba470c55f839675750a51ebde04a8385a4a6",
+      "promptSummary": "goal=language-onboarding-arena task=language-onboarding observation#3 messages=2 history=1",
+      "proposal": {
+        "kind": "click",
+        "text": "",
+        "actionId": "act-2-0-r0c0",
+        "observationSequence": 1,
+        "rationale": "pick English"
+      },
+      "usage": {
+        "model": "scripted-conformance-v1",
+        "inputTokens": 12,
+        "outputTokens": 4,
+        "latencyNanoseconds": 0
+      }
+    },
+    {
+      "key": "48661ee4b0a7b575a0a60dd821fbfe556d7097d9d079d63389466e036896a1a5",
+      "promptSummary": "goal=language-onboarding-arena task=language-onboarding observation#5 messages=2 history=2",
+      "proposal": {
+        "kind": "send-text",
+        "text": "Thanks!",
+        "actionId": "",
+        "observationSequence": 0,
+        "rationale": "acknowledge the greeting"
+      },
+      "usage": {
+        "model": "scripted-conformance-v1",
+        "inputTokens": 12,
+        "outputTokens": 4,
+        "latencyNanoseconds": 0
+      }
+    },
+    {
+      "key": "3fbddf6b0dac23867fec75437b06e5a78185cdb64e6345d71b0557e7c3cc0120",
+      "promptSummary": "goal=language-onboarding-arena task=language-onboarding observation#7 messages=4 history=3",
+      "proposal": {
+        "kind": "task-done",
+        "text": "",
+        "actionId": "",
+        "observationSequence": 0,
+        "rationale": "sent the acknowledgement"
+      },
+      "usage": {
+        "model": "scripted-conformance-v1",
+        "inputTokens": 12,
+        "outputTokens": 4,
+        "latencyNanoseconds": 0
+      }
+    }
+  ]
+}

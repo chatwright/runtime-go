@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+## 0.4.0 (2026-07-25)
+
+- **Self-contained scenario documents** (new `scenario` package;
+  [spec/features/chatwright/scenario-authoring/portable-scenario-documents/self-contained-scenario-documents](https://github.com/chatwright/chatwright/blob/main/spec/features/chatwright/scenario-authoring/portable-scenario-documents/self-contained-scenario-documents/README.md)):
+  a parser, validator and `run.Run` mapper for format
+  `https://chatwright.dev/formats/scenario-document/v1` — one committed,
+  language-neutral JSON document declaring a bot endpoint, an AI goal with
+  tasks and budgets, the cast, declared fidelity and an independent journal
+  verification, executable with no Go written. `scenario.Parse` is pure
+  (structural validation only: no file/env/network/credential access, no
+  bot started); `scenario.ScenarioProvider` (with the file-backed
+  `scenario.FileScenarioProvider`) resolves a reference into a validated
+  `scenario.Document` without the runner ever learning where it came from;
+  `scenario.Build` is the separate, explicit resolution step (secret
+  resolution, example-bot boot, HTTP transport wiring, cassette loading)
+  that maps a `Document` onto a ready-to-execute `run.Run` via
+  `run.NewAIGoalPart`. `scenario.VerifySpec`/`CompileVerify`/`Evaluate`
+  implement the declarative journal-expectation verification (ordered
+  `{field,op,value,negate}` conditions over `exact`/`contains`/`regex`,
+  RE2-subset-checked; the pinned `scenario.UnmetPrefix` = `"journal
+  evidence incomplete: "` and `"; "` join, byte-identical to
+  `arena.verifyGreetbotJournal`'s own runtime prefix).
+  Security-critical validation is rejection, not warning: an inline value
+  in any of the closed-list secret-bearing fields (`bot.headers[*]`,
+  `cast[*].provider.apiKey`, `.wraps.apiKey`) is rejected as
+  `inline-secret`/`secret-ref-shape`; a `bot.url` or provider `baseUrl`
+  carrying userinfo or a credential-shaped query parameter is rejected as
+  `credential-bearing-url`; a `command`/`script`/`shell`/`entrypoint`
+  member anywhere in the document is rejected as
+  `executable-string-member`; an `ai-goal` part with no positive budget
+  bound is rejected as `ai-goal-budgets-required`; an unsupported
+  `format`/`schemaVersion`/capability (`multi-chat`, `deterministic-steps`,
+  an unregistered `exampleBot:*`, an `iframe` transport — this runtime has
+  no iframe host, matching `docs/runtime-parity.md`) is rejected naming it
+  explicitly. Every rejection Issue carries a JSON pointer and a rule code
+  and never echoes the offending value. `scenario.ResolveFidelity` applies
+  the environment/data-sensitivity defaulting rules (an unrecognised host
+  resolves to `unknown`, never guessed; `production` defaults
+  `dataSensitivity` to `real-subject`; `real-subject` requires a declared
+  `redactionPolicy`). The worked-example greetbot document is a committed
+  fixture (`scenario/testdata/greetbot-language-onboarding.json` +
+  cassette) proven byte-for-byte equivalent to `arena.GreetbotScenario()`
+  — same scenario id/version/title, goal id/task id/success criteria
+  (verbatim)/budgets, chat/user/bot roster identity, and the same
+  `verifyGreetbotJournal` verdict and detail string for the document's own
+  executed journal — by `TestGreetbotDocumentReproducesArenaScenario`, the
+  feature's named proof.
+  Not built in this package: the `scenario-manifest/v1` `document` field
+  wiring (no manifest parser exists yet in this module to extend) and
+  publishing `formats/scenario-document/v1/{README.md,schema.json}` in the
+  standard repository (out of this module's scope) — both remain open,
+  see that feature's own acceptance criteria.
 - **Evidence-defined completion**
   ([spec/ideas/evidence-defined-completion.md](https://github.com/chatwright/chatwright/blob/main/spec/ideas/evidence-defined-completion.md)):
   `goal.Task` gained an optional, Go-only, never-serialised `Criteria`

@@ -1,0 +1,99 @@
+{
+  "format": "https://chatwright.dev/formats/scenario-document/v1",
+  "schemaVersion": 1,
+  "id": "greetbot-language-onboarding",
+  "version": "v1",
+  "title": "Complete language onboarding and acknowledge the greeting",
+  "description": "Send /start, click the action labelled exactly \"English\" among three choices, recognise the in-place edit to the English greeting, and acknowledge it with free text before declaring done.",
+  "requires": ["ai-goal", "exampleBot:greetbot"],
+  "fidelity": {
+    "endpointProfile": "platform-emulated",
+    "environment": "dev",
+    "dataSensitivity": "synthetic"
+  },
+  "platform": "telegram",
+  "chats": [
+    {"id": "main", "platformChatId": 42}
+  ],
+  "bot": {
+    "id": "greetbot",
+    "name": "GreetBot",
+    "exampleBot": "greetbot"
+  },
+  "cast": [
+    {
+      "id": "arena",
+      "type": "ai-agent",
+      "name": "Arena",
+      "platformIdentity": {"userId": 7, "firstName": "Arena"},
+      "provider": {
+        "kind": "cassette",
+        "mode": "replay",
+        "cassette": "cassettes/greetbot-language-onboarding.json"
+      }
+    }
+  ],
+  "parts": [
+    {
+      "id": "language-onboarding",
+      "kind": "ai-goal",
+      "title": "Complete language onboarding",
+      "chat": "main",
+      "actorId": "arena",
+      "failurePolicy": "abort",
+      "goal": {
+        "id": "language-onboarding-arena",
+        "title": "Complete language onboarding and acknowledge the greeting",
+        "tasks": [
+          {
+            "id": "language-onboarding",
+            "title": "Complete language onboarding",
+            "successCriteria": "Send \"/start\" as text to begin the conversation. Wait for the bot's language picker message, which carries labelled available actions. Click the action labelled exactly \"English\" (a click proposal, using its listed action id) — do not send free text for this step, and do not click any other label. After the bot's greeting message changes (it is edited in place to an English greeting), send one short text message acknowledging the greeting (for example \"Thanks!\" or \"Great, thanks for the greeting!\"). Only once you have sent that acknowledgement should you declare the task done."
+          }
+        ],
+        "budgets": {
+          "maxSteps": 12,
+          "maxDurationSeconds": 240
+        }
+      }
+    }
+  ],
+  "verify": {
+    "chat": "main",
+    "metDetail": "started, clicked English, acknowledged — all journal-verified",
+    "journal": [
+      {
+        "id": "sent-start",
+        "unmetDetail": "never sent /start",
+        "all": [
+          {"field": "kind", "op": "exact", "value": "message"},
+          {"field": "direction", "op": "exact", "value": "user"},
+          {"field": "text", "op": "exact", "value": "/start"}
+        ]
+      },
+      {
+        "id": "greeting-changed",
+        "unmetDetail": "never got the English greeting (wrong/no click)",
+        "all": [
+          {"field": "kind", "op": "exact", "value": "message"},
+          {"field": "direction", "op": "exact", "value": "bot"},
+          {"field": "edited", "op": "exact", "value": true},
+          {"field": "text", "op": "exact", "value": "Howdy stranger"}
+        ]
+      },
+      {
+        "id": "acknowledged",
+        "unmetDetail": "never sent an acknowledgement after the greeting changed",
+        "all": [
+          {"field": "kind", "op": "exact", "value": "message"},
+          {"field": "direction", "op": "exact", "value": "user"},
+          {"field": "text", "op": "regex", "value": "\\S"},
+          {"field": "text", "op": "exact", "value": "/start", "negate": true}
+        ]
+      }
+    ]
+  },
+  "verifies": [
+    "chatwright/scenario-authoring/portable-scenario-documents/self-contained-scenario-documents#ac:greetbot-scenario-is-expressible"
+  ]
+}
