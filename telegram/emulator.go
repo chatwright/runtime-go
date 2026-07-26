@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -887,6 +888,11 @@ func parseEditMessageText(r *http.Request) (chatID int64, messageID int, text st
 		if err = json.NewDecoder(r.Body).Decode(&p); err != nil {
 			return 0, 0, "", nil, nil, fmt.Errorf("editMessageText: invalid JSON body: %w", err)
 		}
+		if p.RichMessage != nil {
+			if err = validateInputRichMessage(*p.RichMessage); err != nil {
+				return 0, 0, "", nil, nil, fmt.Errorf("editMessageText: invalid rich_message: %w", err)
+			}
+		}
 		return parseChatID(string(p.ChatID)), p.MessageID, p.Text, p.RichMessage, p.ReplyMarkup, nil
 	}
 
@@ -897,6 +903,9 @@ func parseEditMessageText(r *http.Request) (chatID int64, messageID int, text st
 	if raw := r.FormValue("rich_message"); raw != "" {
 		var value inputRichMessageWire
 		if err = json.Unmarshal([]byte(raw), &value); err != nil {
+			return 0, 0, "", nil, nil, fmt.Errorf("editMessageText: invalid rich_message: %w", err)
+		}
+		if err = validateInputRichMessage(value); err != nil {
 			return 0, 0, "", nil, nil, fmt.Errorf("editMessageText: invalid rich_message: %w", err)
 		}
 		rich = &value
@@ -923,6 +932,9 @@ func parseRichMessageRequest(
 		if err = json.NewDecoder(r.Body).Decode(&p); err != nil {
 			return 0, rich, nil, fmt.Errorf("%s: invalid JSON body: %w", method, err)
 		}
+		if err = validateInputRichMessage(p.RichMessage); err != nil {
+			return 0, rich, nil, fmt.Errorf("%s: invalid rich_message: %w", method, err)
+		}
 		return parseChatID(string(p.ChatID)), p.RichMessage, p.ReplyMarkup, nil
 	}
 	if err = r.ParseForm(); err != nil {
@@ -931,6 +943,9 @@ func parseRichMessageRequest(
 	raw := r.FormValue("rich_message")
 	if raw != "" {
 		if err = json.Unmarshal([]byte(raw), &rich); err != nil {
+			return 0, rich, nil, fmt.Errorf("%s: invalid rich_message: %w", method, err)
+		}
+		if err = validateInputRichMessage(rich); err != nil {
 			return 0, rich, nil, fmt.Errorf("%s: invalid rich_message: %w", method, err)
 		}
 	}
@@ -974,6 +989,103 @@ type inputRichBlockListWire struct {
 
 type richBlockCellWire struct {
 	Text json.RawMessage `json:"text,omitempty"`
+}
+
+var telegramDateTimeFormatPattern = regexp.MustCompile(`^(r|w?[dD]?[tT]?)$`)
+
+func validateInputRichMessage(rich inputRichMessageWire) error {
+	return validateRichBlocks(rich.Blocks)
+}
+
+func validateRichBlocks(blocks []inputRichBlockWire) error {
+	for blockIndex := range blocks {
+		block := &blocks[blockIndex]
+		for _, field := range []struct {
+			name string
+			text json.RawMessage
+		}{
+			{name: "text", text: block.Text},
+			{name: "summary", text: block.Summary},
+			{name: "caption", text: block.Caption},
+			{name: "credit", text: block.Credit},
+		} {
+			if err := validateRichText(field.text); err != nil {
+				return fmt.Errorf("blocks[%d].%s: %w", blockIndex, field.name, err)
+			}
+		}
+		for rowIndex := range block.Cells {
+			for cellIndex := range block.Cells[rowIndex] {
+				if err := validateRichText(block.Cells[rowIndex][cellIndex].Text); err != nil {
+					return fmt.Errorf("blocks[%d].cells[%d][%d].text: %w", blockIndex, rowIndex, cellIndex, err)
+				}
+			}
+		}
+		for itemIndex := range block.Items {
+			if err := validateRichBlocks(block.Items[itemIndex].Blocks); err != nil {
+				return fmt.Errorf("blocks[%d].items[%d]: %w", blockIndex, itemIndex, err)
+			}
+		}
+		if err := validateRichBlocks(block.Blocks); err != nil {
+			return fmt.Errorf("blocks[%d]: %w", blockIndex, err)
+		}
+	}
+	return nil
+}
+
+func validateRichText(raw json.RawMessage) error {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return nil
+	}
+	switch raw[0] {
+	case '"':
+		return nil
+	case '[':
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return fmt.Errorf("invalid rich text array: %w", err)
+		}
+		for itemIndex := range items {
+			if err := validateRichText(items[itemIndex]); err != nil {
+				return fmt.Errorf("items[%d]: %w", itemIndex, err)
+			}
+		}
+		return nil
+	case '{':
+		var value struct {
+			Type           string          `json:"type"`
+			Text           json.RawMessage `json:"text"`
+			Credit         json.RawMessage `json:"credit"`
+			UnixTime       *int64          `json:"unix_time"`
+			DateTimeFormat *string         `json:"date_time_format"`
+		}
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return fmt.Errorf("invalid rich text object: %w", err)
+		}
+		if value.Type == tgbotapi.RichTextTypeDateTime {
+			if value.UnixTime == nil {
+				return fmt.Errorf("unix_time is required for date_time rich text")
+			}
+			if value.DateTimeFormat == nil {
+				return fmt.Errorf("date_time_format is required for date_time rich text")
+			}
+			if !telegramDateTimeFormatPattern.MatchString(*value.DateTimeFormat) {
+				return fmt.Errorf(
+					"date_time_format %q must match r|w?[dD]?[tT]?",
+					*value.DateTimeFormat,
+				)
+			}
+		}
+		if err := validateRichText(value.Text); err != nil {
+			return fmt.Errorf("text: %w", err)
+		}
+		if err := validateRichText(value.Credit); err != nil {
+			return fmt.Errorf("credit: %w", err)
+		}
+		return nil
+	default:
+		return nil
+	}
 }
 
 func richMessageText(rich inputRichMessageWire) string {

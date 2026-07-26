@@ -171,6 +171,95 @@ func TestHandleSendRichMessage_ProjectsBlocksAndCopyText(t *testing.T) {
 	}
 }
 
+func TestHandleSendRichMessage_DateTimeFormatConformance(t *testing.T) {
+	tests := []struct {
+		name           string
+		dateTimeFields map[string]any
+		wantStatus     int
+		wantErrorField string
+	}{
+		{
+			name:           "r accepted",
+			dateTimeFields: map[string]any{"unix_time": 1_800_000_000, "date_time_format": "r"},
+			wantStatus:     http.StatusOK,
+		},
+		{
+			name:           "empty format and zero unix time accepted",
+			dateTimeFields: map[string]any{"unix_time": 0, "date_time_format": ""},
+			wantStatus:     http.StatusOK,
+		},
+		{
+			name:           "relative rejected",
+			dateTimeFields: map[string]any{"unix_time": 1_800_000_000, "date_time_format": "relative"},
+			wantStatus:     http.StatusBadRequest,
+			wantErrorField: "date_time_format",
+		},
+		{
+			name:           "missing date time format rejected",
+			dateTimeFields: map[string]any{"unix_time": 1_800_000_000},
+			wantStatus:     http.StatusBadRequest,
+			wantErrorField: "date_time_format",
+		},
+		{
+			name:           "missing unix time rejected",
+			dateTimeFields: map[string]any{"date_time_format": "r"},
+			wantStatus:     http.StatusBadRequest,
+			wantErrorField: "unix_time",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := NewEmulator()
+			t.Cleanup(e.Close)
+
+			dateTime := map[string]any{
+				"type": "date_time",
+				"text": "soon",
+			}
+			for field, value := range tt.dateTimeFields {
+				dateTime[field] = value
+			}
+			status, env := postJSON(t, e.BotAPIURL()+"/botTEST/sendRichMessage", map[string]any{
+				"chat_id": 42,
+				"rich_message": map[string]any{
+					"blocks": []map[string]any{{
+						"type":    "details",
+						"summary": "Deadline",
+						"blocks": []map[string]any{{
+							"type": "paragraph",
+							"text": []any{map[string]any{
+								"type": "bold",
+								"text": []any{dateTime},
+							}},
+						}},
+					}},
+				},
+			})
+			if status != tt.wantStatus {
+				t.Fatalf("status = %d, want %d: %v", status, tt.wantStatus, env)
+			}
+			if tt.wantStatus == http.StatusBadRequest {
+				description, _ := env["description"].(string)
+				if !strings.Contains(description, tt.wantErrorField) {
+					t.Fatalf("description = %q, want rejected %s", description, tt.wantErrorField)
+				}
+				if format, ok := tt.dateTimeFields["date_time_format"].(string); ok &&
+					format == "relative" && !strings.Contains(description, format) {
+					t.Fatalf("description = %q, want rejected date_time_format value", description)
+				}
+				if _, ok := e.WaitForMessage(42, 0, 10*time.Millisecond); ok {
+					t.Fatal("invalid rich message must not be journaled")
+				}
+				return
+			}
+			message, ok := e.WaitForMessage(42, 0, time.Second)
+			if !ok || message.Text != "Deadline\nsoon" {
+				t.Fatalf("accepted rich message = %+v, ok=%v", message, ok)
+			}
+		})
+	}
+}
+
 func TestHandleEditMessageText_RichMessageFormBody(t *testing.T) {
 	e := NewEmulator()
 	t.Cleanup(e.Close)
