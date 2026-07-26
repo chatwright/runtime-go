@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"chatwright.dev/runtime/platform"
 )
@@ -109,6 +113,247 @@ func TestHandleSendMessage_ResponseHasJournalAssignedMessageID(t *testing.T) {
 	result2 := resultOf(t, env2)
 	if id, _ := result2["message_id"].(float64); id != 2 {
 		t.Fatalf("second result.message_id = %v, want 2", result2["message_id"])
+	}
+}
+
+func TestHandleSendRichMessage_ProjectsBlocksAndCopyText(t *testing.T) {
+	e := NewEmulator()
+	t.Cleanup(e.Close)
+
+	status, env := postJSON(t, e.BotAPIURL()+"/botTEST/sendRichMessage", map[string]any{
+		"chat_id": 42,
+		"rich_message": map[string]any{
+			"blocks": []map[string]any{
+				{"type": "heading", "text": "🃏 Preferans"},
+				{
+					"type":    "table",
+					"caption": "Confirmed wallet settlement",
+					"cells": [][]map[string]any{
+						{{"text": "Player", "is_header": true}, {"text": "Score", "is_header": true}},
+						{{"text": "Alice"}, {"text": "10"}},
+					},
+				},
+				{
+					"type":    "details",
+					"summary": "📖 Rules",
+					"blocks":  []map[string]any{{"type": "paragraph", "text": "Follow suit."}},
+				},
+			},
+		},
+		"reply_markup": map[string]any{
+			"inline_keyboard": [][]map[string]any{{
+				{"text": "📋 Copy invite", "copy_text": map[string]any{"text": "https://t.me/SneatBot?start=pref_abc"}},
+			}},
+		},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %v", status, http.StatusOK, env)
+	}
+
+	msg, ok := e.WaitForMessage(42, 0, time.Second)
+	if !ok {
+		t.Fatal("WaitForMessage did not observe sendRichMessage")
+	}
+	for _, want := range []string{
+		"🃏 Preferans",
+		"Confirmed wallet settlement",
+		"Player | Score",
+		"Alice | 10",
+		"📖 Rules",
+		"Follow suit.",
+	} {
+		if !strings.Contains(msg.Text, want) {
+			t.Errorf("rich message text = %q, want it to contain %q", msg.Text, want)
+		}
+	}
+	if got := msg.Actions[0][0].CopyText; got != "https://t.me/SneatBot?start=pref_abc" {
+		t.Errorf("copy text = %q", got)
+	}
+}
+
+func TestHandleSendRichMessage_DateTimeFormatConformance(t *testing.T) {
+	tests := []struct {
+		name           string
+		dateTimeFields map[string]any
+		wantStatus     int
+		wantErrorField string
+	}{
+		{
+			name:           "r accepted",
+			dateTimeFields: map[string]any{"unix_time": 1_800_000_000, "date_time_format": "r"},
+			wantStatus:     http.StatusOK,
+		},
+		{
+			name:           "empty format and zero unix time accepted",
+			dateTimeFields: map[string]any{"unix_time": 0, "date_time_format": ""},
+			wantStatus:     http.StatusOK,
+		},
+		{
+			name:           "relative rejected",
+			dateTimeFields: map[string]any{"unix_time": 1_800_000_000, "date_time_format": "relative"},
+			wantStatus:     http.StatusBadRequest,
+			wantErrorField: "date_time_format",
+		},
+		{
+			name:           "missing date time format rejected",
+			dateTimeFields: map[string]any{"unix_time": 1_800_000_000},
+			wantStatus:     http.StatusBadRequest,
+			wantErrorField: "date_time_format",
+		},
+		{
+			name:           "missing unix time rejected",
+			dateTimeFields: map[string]any{"date_time_format": "r"},
+			wantStatus:     http.StatusBadRequest,
+			wantErrorField: "unix_time",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := NewEmulator()
+			t.Cleanup(e.Close)
+
+			dateTime := map[string]any{
+				"type": "date_time",
+				"text": "soon",
+			}
+			for field, value := range tt.dateTimeFields {
+				dateTime[field] = value
+			}
+			status, env := postJSON(t, e.BotAPIURL()+"/botTEST/sendRichMessage", map[string]any{
+				"chat_id": 42,
+				"rich_message": map[string]any{
+					"blocks": []map[string]any{{
+						"type":    "details",
+						"summary": "Deadline",
+						"blocks": []map[string]any{{
+							"type": "paragraph",
+							"text": []any{map[string]any{
+								"type": "bold",
+								"text": []any{dateTime},
+							}},
+						}},
+					}},
+				},
+			})
+			if status != tt.wantStatus {
+				t.Fatalf("status = %d, want %d: %v", status, tt.wantStatus, env)
+			}
+			if tt.wantStatus == http.StatusBadRequest {
+				description, _ := env["description"].(string)
+				if !strings.Contains(description, tt.wantErrorField) {
+					t.Fatalf("description = %q, want rejected %s", description, tt.wantErrorField)
+				}
+				if format, ok := tt.dateTimeFields["date_time_format"].(string); ok &&
+					format == "relative" && !strings.Contains(description, format) {
+					t.Fatalf("description = %q, want rejected date_time_format value", description)
+				}
+				if _, ok := e.WaitForMessage(42, 0, 10*time.Millisecond); ok {
+					t.Fatal("invalid rich message must not be journaled")
+				}
+				return
+			}
+			message, ok := e.WaitForMessage(42, 0, time.Second)
+			if !ok || message.Text != "Deadline\nsoon" {
+				t.Fatalf("accepted rich message = %+v, ok=%v", message, ok)
+			}
+		})
+	}
+}
+
+func TestHandleEditMessageText_RichMessageFormBody(t *testing.T) {
+	e := NewEmulator()
+	t.Cleanup(e.Close)
+
+	_, sendEnv := postJSON(t, e.BotAPIURL()+"/botTEST/sendRichMessage", map[string]any{
+		"chat_id":      7,
+		"rich_message": map[string]any{"blocks": []map[string]any{{"type": "paragraph", "text": "Lobby"}}},
+	})
+	messageID := int(resultOf(t, sendEnv)["message_id"].(float64))
+
+	form := url.Values{
+		"chat_id":      {"7"},
+		"message_id":   {strconv.Itoa(messageID)},
+		"rich_message": {`{"blocks":[{"type":"table","caption":"Confirmed wallet settlement","cells":[[{"text":"Alice"},{"text":"+5 🪙"}]]}]}`},
+	}
+	response, err := http.PostForm(e.BotAPIURL()+"/botTEST/editMessageText", form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
+	msg, ok := e.WaitForEdit(7, messageID, 0, time.Second)
+	if !ok || msg.Text != "Confirmed wallet settlement\nAlice | +5 🪙" {
+		t.Fatalf("edited rich message = %+v, ok=%v", msg, ok)
+	}
+}
+
+func TestHandleSendRichMessageDraft_AcknowledgedWithoutPersistentMessage(t *testing.T) {
+	e := NewEmulator()
+	t.Cleanup(e.Close)
+
+	status, env := postJSON(t, e.BotAPIURL()+"/botTEST/sendRichMessageDraft", map[string]any{
+		"chat_id":      42,
+		"draft_id":     9,
+		"rich_message": map[string]any{"blocks": []map[string]any{{"type": "thinking", "text": "🤖 Thinking…"}}},
+	})
+	if status != http.StatusOK || env["result"] != true {
+		t.Fatalf("draft response status=%d envelope=%v", status, env)
+	}
+	if _, ok := e.WaitForMessage(42, 0, 10*time.Millisecond); ok {
+		t.Fatal("temporary rich-message draft must not become a persistent bot message")
+	}
+}
+
+func TestSubmitText_CapturesInlineWebhookBotAPIResponse(t *testing.T) {
+	e := NewEmulator()
+	t.Cleanup(e.Close)
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"method":"sendMessage",
+			"chat_id":42,
+			"text":"🎮 Games",
+			"reply_markup":{"inline_keyboard":[[{"text":"🃏 Preferans","callback_data":"pref?a=n"}]]}
+		}`))
+	}))
+	t.Cleanup(webhook.Close)
+	e.SetWebhook(webhook.URL, webhook.Client())
+
+	if err := e.SubmitText(42, platform.User{ID: 7, FirstName: "Alice"}, "/games"); err != nil {
+		t.Fatal(err)
+	}
+	message, ok := e.WaitForMessage(42, 0, time.Second)
+	if !ok {
+		t.Fatal("inline webhook sendMessage was not captured")
+	}
+	if message.Text != "🎮 Games" || len(message.Actions) != 1 || message.Actions[0][0].ID != "pref?a=n" {
+		t.Fatalf("message = %+v", message)
+	}
+}
+
+func TestSubmitText_CapturesFormEncodedInlineWebhookResponse(t *testing.T) {
+	e := NewEmulator()
+	t.Cleanup(e.Close)
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-www-form-urlencoded")
+		values := url.Values{
+			"method":  {"sendMessage"},
+			"chat_id": {"42"},
+			"text":    {"🎮 Games"},
+		}
+		_, _ = w.Write([]byte(values.Encode()))
+	}))
+	t.Cleanup(webhook.Close)
+	e.SetWebhook(webhook.URL, webhook.Client())
+
+	if err := e.SubmitText(42, platform.User{ID: 7, FirstName: "Alice"}, "/games"); err != nil {
+		t.Fatal(err)
+	}
+	message, ok := e.WaitForMessage(42, 0, time.Second)
+	if !ok || message.Text != "🎮 Games" {
+		t.Fatalf("message = %+v, ok=%v", message, ok)
 	}
 }
 

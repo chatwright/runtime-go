@@ -23,9 +23,10 @@ type User struct {
 // Action is a neutral interactive action (a button) captured from a bot message.
 // Telegram inline buttons and WhatsApp interactive replies both normalize to it.
 type Action struct {
-	Label string `json:"label"` // user-visible text (Telegram button text / WhatsApp reply title)
-	ID    string `json:"id"`    // stable identifier (Telegram callback_data / WhatsApp reply id)
-	URL   string `json:"url"`   // set for link actions
+	Label    string `json:"label"`              // user-visible text (Telegram button text / WhatsApp reply title)
+	ID       string `json:"id"`                 // stable identifier (Telegram callback_data / WhatsApp reply id)
+	URL      string `json:"url"`                // set for link actions
+	CopyText string `json:"copyText,omitempty"` // text copied by a platform-native copy action
 }
 
 // Message is a neutral bot message captured from a platform's outbound API call.
