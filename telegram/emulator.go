@@ -13,9 +13,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"html"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -293,8 +296,65 @@ func (e *Emulator) deliver(update tgbotapi.Update, webhookURL string, client *ht
 		return fmt.Errorf("chatwright: deliver update to webhook: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("chatwright: webhook returned status %d", resp.StatusCode)
+		detail := strings.TrimSpace(string(responseBody))
+		if detail == "" {
+			return fmt.Errorf("chatwright: webhook returned status %d", resp.StatusCode)
+		}
+		return fmt.Errorf("chatwright: webhook returned status %d: %s", resp.StatusCode, detail)
+	}
+	if err := e.captureInlineWebhookResponse(responseBody, resp.Header.Get("Content-Type")); err != nil {
+		return err
+	}
+	return nil
+}
+
+// captureInlineWebhookResponse emulates Telegram's ability to execute one Bot
+// API method by returning its JSON payload directly as the webhook response.
+// Frameworks use this latency-saving path for simple replies; ignoring it
+// makes a correctly replying bot appear silent to a black-box scenario.
+func (e *Emulator) captureInlineWebhookResponse(body []byte, contentType string) error {
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return nil
+	}
+	var method string
+	isJSON := strings.HasPrefix(contentType, "application/json") || body[0] == '{'
+	if isJSON {
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return fmt.Errorf("chatwright: webhook returned invalid inline Bot API JSON: %w", err)
+		}
+		method, _ = payload["method"].(string)
+	} else {
+		values, err := url.ParseQuery(string(body))
+		if err != nil {
+			return fmt.Errorf("chatwright: webhook returned invalid inline Bot API form: %w", err)
+		}
+		method = values.Get("method")
+		contentType = "application/x-www-form-urlencoded"
+	}
+	if method == "" {
+		// A plain acknowledgement body isn't an inline Bot API request.
+		return nil
+	}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/botINLINE/"+method,
+		bytes.NewReader(body),
+	)
+	request.Header.Set("Content-Type", contentType)
+	response := httptest.NewRecorder()
+	e.handle(response, request)
+	if response.Code >= http.StatusBadRequest {
+		detail := strings.TrimSpace(response.Body.String())
+		return fmt.Errorf(
+			"chatwright: inline webhook Bot API method %s failed with status %d: %s",
+			method,
+			response.Code,
+			detail,
+		)
 	}
 	return nil
 }
@@ -325,6 +385,10 @@ func (e *Emulator) handle(w http.ResponseWriter, r *http.Request) {
 		e.handleGetUpdates(w, r)
 	case "sendMessage":
 		e.handleSendMessage(w, r, token)
+	case "sendRichMessage":
+		e.handleSendRichMessage(w, r, token)
+	case "sendRichMessageDraft":
+		e.handleSendRichMessageDraft(w, r)
 	case "editMessageText":
 		e.handleEditMessageText(w, r, token)
 	default:
@@ -334,6 +398,61 @@ func (e *Emulator) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		e.handleUnsupported(w, r, token, method)
 	}
+}
+
+// handleSendRichMessage emulates Bot API 10.1/10.2 native rich messages. The
+// exact InputRichMessage remains Telegram-native at the wire seam; Chatwright's
+// neutral transcript gets a deterministic plain-text projection so existing
+// message assertions and accessibility checks continue to work.
+func (e *Emulator) handleSendRichMessage(w http.ResponseWriter, r *http.Request, token string) {
+	chatID, rich, markup, err := parseRichMessageRequest(r, "sendRichMessage")
+	if err != nil {
+		writeError(w, err.Error())
+		return
+	}
+	if chatID == 0 {
+		writeError(w, "sendRichMessage: chat_id is required")
+		return
+	}
+	text := richMessageText(rich)
+	if text == "" {
+		writeError(w, "sendRichMessage: rich_message is required")
+		return
+	}
+
+	e.mu.Lock()
+	messageID := e.reserveMessageIDLocked(chatID)
+	at := time.Now()
+	e.appendLocked(journalEntry{
+		chatID: chatID, dir: fromBot, kind: kindText, messageID: messageID,
+		text: text, markup: markup, at: at, method: "sendRichMessage",
+		token: token, fromID: EmulatedBotUserID,
+	})
+	e.mu.Unlock()
+
+	writeResult(w, tgbotapi.Message{
+		MessageID: messageID,
+		From:      &tgbotapi.User{ID: EmulatedBotUserID, IsBot: true, FirstName: "ChatwrightBot"},
+		Chat:      &tgbotapi.Chat{ID: chatID, Type: "private"},
+		Date:      int(at.Unix()),
+		Text:      text,
+	})
+}
+
+// handleSendRichMessageDraft validates and acknowledges streamed draft
+// updates. Drafts are temporary previews rather than persistent chat messages,
+// so they intentionally do not advance the message expectation cursor.
+func (e *Emulator) handleSendRichMessageDraft(w http.ResponseWriter, r *http.Request) {
+	chatID, rich, _, err := parseRichMessageRequest(r, "sendRichMessageDraft")
+	if err != nil {
+		writeError(w, err.Error())
+		return
+	}
+	if chatID == 0 || richMessageText(rich) == "" {
+		writeError(w, "sendRichMessageDraft: chat_id and rich_message are required")
+		return
+	}
+	writeResult(w, true)
 }
 
 // handleUnsupported responds to a Bot API method the emulator does not
@@ -449,13 +568,20 @@ func (e *Emulator) handleSendMessage(w http.ResponseWriter, r *http.Request, tok
 // message's full edit history was recorded, even though only its current
 // state is displayed.
 func (e *Emulator) handleEditMessageText(w http.ResponseWriter, r *http.Request, token string) {
-	chatID, messageID, text, markup, err := parseEditMessageText(r)
+	chatID, messageID, text, rich, markup, err := parseEditMessageText(r)
 	if err != nil {
 		writeError(w, err.Error())
 		return
 	}
 	if chatID == 0 || messageID == 0 {
 		writeError(w, "editMessageText: chat_id and message_id are required")
+		return
+	}
+	if rich != nil {
+		text = richMessageText(*rich)
+	}
+	if text == "" {
+		writeError(w, "editMessageText: text or rich_message is required")
 		return
 	}
 
@@ -679,7 +805,11 @@ func actionsFromMarkup(markup *tgbotapi.InlineKeyboardMarkup) [][]platform.Actio
 	for _, row := range markup.InlineKeyboard {
 		arow := make([]platform.Action, 0, len(row))
 		for _, b := range row {
-			arow = append(arow, platform.Action{Label: b.Text, ID: b.CallbackData, URL: b.URL})
+			action := platform.Action{Label: b.Text, ID: b.CallbackData, URL: b.URL}
+			if b.CopyText != nil {
+				action.CopyText = b.CopyText.Text
+			}
+			arow = append(arow, action)
 		}
 		actions = append(actions, arow)
 	}
@@ -745,31 +875,233 @@ func parseSendMessage(r *http.Request) (chatID int64, text string, markup *tgbot
 // JSON here too; previously only form bodies were parsed, so a non-Go bot
 // (Python, Node, ...) editing via JSON silently got empty chat_id/message_id/
 // text and a confusing "message to edit not found".
-func parseEditMessageText(r *http.Request) (chatID int64, messageID int, text string, markup *tgbotapi.InlineKeyboardMarkup, err error) {
+func parseEditMessageText(r *http.Request) (chatID int64, messageID int, text string, rich *inputRichMessageWire, markup *tgbotapi.InlineKeyboardMarkup, err error) {
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		var p struct {
 			ChatID      json.RawMessage                `json:"chat_id"`
 			MessageID   int                            `json:"message_id"`
 			Text        string                         `json:"text"`
+			RichMessage *inputRichMessageWire          `json:"rich_message"`
 			ReplyMarkup *tgbotapi.InlineKeyboardMarkup `json:"reply_markup"`
 		}
 		if err = json.NewDecoder(r.Body).Decode(&p); err != nil {
-			return 0, 0, "", nil, fmt.Errorf("editMessageText: invalid JSON body: %w", err)
+			return 0, 0, "", nil, nil, fmt.Errorf("editMessageText: invalid JSON body: %w", err)
 		}
-		return parseChatID(string(p.ChatID)), p.MessageID, p.Text, p.ReplyMarkup, nil
+		return parseChatID(string(p.ChatID)), p.MessageID, p.Text, p.RichMessage, p.ReplyMarkup, nil
 	}
 
 	if err = r.ParseForm(); err != nil {
-		return 0, 0, "", nil, fmt.Errorf("editMessageText: invalid form body: %w", err)
+		return 0, 0, "", nil, nil, fmt.Errorf("editMessageText: invalid form body: %w", err)
 	}
 	messageID, _ = strconv.Atoi(r.FormValue("message_id"))
+	if raw := r.FormValue("rich_message"); raw != "" {
+		var value inputRichMessageWire
+		if err = json.Unmarshal([]byte(raw), &value); err != nil {
+			return 0, 0, "", nil, nil, fmt.Errorf("editMessageText: invalid rich_message: %w", err)
+		}
+		rich = &value
+	}
 	if rm := r.FormValue("reply_markup"); rm != "" {
 		var m tgbotapi.InlineKeyboardMarkup
 		if json.Unmarshal([]byte(rm), &m) == nil {
 			markup = &m
 		}
 	}
-	return parseChatID(r.FormValue("chat_id")), messageID, r.FormValue("text"), markup, nil
+	return parseChatID(r.FormValue("chat_id")), messageID, r.FormValue("text"), rich, markup, nil
+}
+
+func parseRichMessageRequest(
+	r *http.Request,
+	method string,
+) (chatID int64, rich inputRichMessageWire, markup *tgbotapi.InlineKeyboardMarkup, err error) {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		var p struct {
+			ChatID      json.RawMessage                `json:"chat_id"`
+			RichMessage inputRichMessageWire           `json:"rich_message"`
+			ReplyMarkup *tgbotapi.InlineKeyboardMarkup `json:"reply_markup"`
+		}
+		if err = json.NewDecoder(r.Body).Decode(&p); err != nil {
+			return 0, rich, nil, fmt.Errorf("%s: invalid JSON body: %w", method, err)
+		}
+		return parseChatID(string(p.ChatID)), p.RichMessage, p.ReplyMarkup, nil
+	}
+	if err = r.ParseForm(); err != nil {
+		return 0, rich, nil, fmt.Errorf("%s: invalid form body: %w", method, err)
+	}
+	raw := r.FormValue("rich_message")
+	if raw != "" {
+		if err = json.Unmarshal([]byte(raw), &rich); err != nil {
+			return 0, rich, nil, fmt.Errorf("%s: invalid rich_message: %w", method, err)
+		}
+	}
+	if rm := r.FormValue("reply_markup"); rm != "" {
+		var value tgbotapi.InlineKeyboardMarkup
+		if json.Unmarshal([]byte(rm), &value) == nil {
+			markup = &value
+		}
+	}
+	return parseChatID(r.FormValue("chat_id")), rich, markup, nil
+}
+
+// The Bot API package deliberately models InputRichBlock as an outgoing-only
+// type, so its caption field is projected only while marshaling and cannot be
+// recovered by unmarshaling a Bot API request. Chatwright is on the receiving
+// side of that request and therefore keeps a small wire-facing projection type
+// that retains captions and the recursively visible rich-message content.
+type inputRichMessageWire struct {
+	Blocks   []inputRichBlockWire `json:"blocks,omitempty"`
+	HTML     string               `json:"html,omitempty"`
+	Markdown string               `json:"markdown,omitempty"`
+}
+
+type inputRichBlockWire struct {
+	Type       string                   `json:"type,omitempty"`
+	Text       json.RawMessage          `json:"text,omitempty"`
+	Summary    json.RawMessage          `json:"summary,omitempty"`
+	Caption    json.RawMessage          `json:"caption,omitempty"`
+	Credit     json.RawMessage          `json:"credit,omitempty"`
+	Expression string                   `json:"expression,omitempty"`
+	Blocks     []inputRichBlockWire     `json:"blocks,omitempty"`
+	Items      []inputRichBlockListWire `json:"items,omitempty"`
+	Cells      [][]richBlockCellWire    `json:"cells,omitempty"`
+}
+
+type inputRichBlockListWire struct {
+	Blocks      []inputRichBlockWire `json:"blocks,omitempty"`
+	HasCheckbox bool                 `json:"has_checkbox,omitempty"`
+	IsChecked   bool                 `json:"is_checked,omitempty"`
+}
+
+type richBlockCellWire struct {
+	Text json.RawMessage `json:"text,omitempty"`
+}
+
+func richMessageText(rich inputRichMessageWire) string {
+	switch {
+	case rich.HTML != "":
+		return strings.TrimSpace(stripHTML(rich.HTML))
+	case rich.Markdown != "":
+		return strings.TrimSpace(rich.Markdown)
+	default:
+		lines := make([]string, 0, len(rich.Blocks))
+		appendRichBlocksText(&lines, rich.Blocks, "")
+		return strings.TrimSpace(strings.Join(lines, "\n"))
+	}
+}
+
+func appendRichBlocksText(lines *[]string, blocks []inputRichBlockWire, prefix string) {
+	for _, block := range blocks {
+		switch block.Type {
+		case tgbotapi.RichBlockTypeDivider:
+			*lines = append(*lines, "—")
+		case tgbotapi.RichBlockTypeTable:
+			if caption := richTextJSONValue(block.Caption); caption != "" {
+				*lines = append(*lines, prefix+caption)
+			}
+			for _, row := range block.Cells {
+				cells := make([]string, 0, len(row))
+				for _, cell := range row {
+					cells = append(cells, richTextJSONValue(cell.Text))
+				}
+				*lines = append(*lines, strings.Join(cells, " | "))
+			}
+		case tgbotapi.RichBlockTypeDetails:
+			if summary := richTextJSONValue(block.Summary); summary != "" {
+				*lines = append(*lines, prefix+summary)
+			}
+			appendRichBlocksText(lines, block.Blocks, prefix)
+		case tgbotapi.RichBlockTypeList:
+			for _, item := range block.Items {
+				before := len(*lines)
+				itemPrefix := "• "
+				if item.HasCheckbox {
+					if item.IsChecked {
+						itemPrefix = "☑ "
+					} else {
+						itemPrefix = "☐ "
+					}
+				}
+				appendRichBlocksText(lines, item.Blocks, itemPrefix)
+				if len(*lines) == before {
+					*lines = append(*lines, strings.TrimSpace(itemPrefix))
+				}
+			}
+		default:
+			if text := richTextJSONValue(block.Text); text != "" {
+				*lines = append(*lines, prefix+text)
+			}
+			if block.Expression != "" {
+				*lines = append(*lines, prefix+block.Expression)
+			}
+			if len(block.Blocks) > 0 {
+				appendRichBlocksText(lines, block.Blocks, prefix)
+			}
+			if caption := richTextJSONValue(block.Caption); caption != "" {
+				*lines = append(*lines, prefix+caption)
+			}
+			if credit := richTextJSONValue(block.Credit); credit != "" {
+				*lines = append(*lines, prefix+credit)
+			}
+		}
+	}
+}
+
+func richTextJSONValue(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return ""
+	}
+	switch raw[0] {
+	case '"':
+		var value string
+		if json.Unmarshal(raw, &value) == nil {
+			return value
+		}
+	case '[':
+		var items []json.RawMessage
+		if json.Unmarshal(raw, &items) == nil {
+			var b strings.Builder
+			for _, item := range items {
+				b.WriteString(richTextJSONValue(item))
+			}
+			return b.String()
+		}
+	case '{':
+		var value struct {
+			Text            json.RawMessage `json:"text"`
+			AlternativeText string          `json:"alternative_text"`
+			Expression      string          `json:"expression"`
+		}
+		if json.Unmarshal(raw, &value) != nil {
+			return ""
+		}
+		if len(value.Text) > 0 {
+			return richTextJSONValue(value.Text)
+		}
+		if value.AlternativeText != "" {
+			return value.AlternativeText
+		}
+		return value.Expression
+	}
+	return ""
+}
+
+func stripHTML(value string) string {
+	var b strings.Builder
+	inTag := false
+	for _, r := range value {
+		switch r {
+		case '<':
+			inTag = true
+		case '>':
+			inTag = false
+		default:
+			if !inTag {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return html.UnescapeString(b.String())
 }
 
 // parseGenericChatID best-effort extracts a top-level chat_id field from a

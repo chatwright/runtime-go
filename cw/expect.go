@@ -251,3 +251,12 @@ func (a *Action) ID(want string) *Action {
 	}
 	return a
 }
+
+// CopyText asserts the text copied by a platform-native copy action.
+func (a *Action) CopyText(want string) *Action {
+	a.chat.cw.t.Helper()
+	if a.act.CopyText != want {
+		a.chat.cw.t.Errorf("chatwright: action copy text = %q, want %q", a.act.CopyText, want)
+	}
+	return a
+}
