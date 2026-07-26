@@ -61,6 +61,29 @@ func (c *Chat) SendText(text string) *Chat {
 	return c
 }
 
+// SubmitCallback is a developer-level escape hatch for protocol robustness
+// scenarios. Unlike Action.Click it deliberately does not require callbackData
+// to be present on the current keyboard, allowing tests to submit a stale,
+// forged, or otherwise invalid callback against an exact bot message.
+//
+// Product-facing actor loops must continue to use advertised actions only.
+func (c *Chat) SubmitCallback(messageID int, callbackData string) *Chat {
+	c.cw.t.Helper()
+	if messageID <= 0 {
+		c.cw.t.Fatalf("chatwright: SubmitCallback requires a positive message ID")
+		return c
+	}
+	if callbackData == "" {
+		c.cw.t.Fatalf("chatwright: SubmitCallback requires callback data")
+		return c
+	}
+	c.lastSent = time.Now()
+	if err := c.cw.emu.SubmitClick(c.chatID, c.user, callbackData, messageID); err != nil {
+		c.cw.t.Fatalf("chatwright: %v", err)
+	}
+	return c
+}
+
 // ExpectBotMessage asserts that the bot sends a message to this chat, returning a
 // fluent handle to assert on its content. Chatwright waits up to the harness's
 // safety timeout (default 5s; see WithSafetyTimeout) for it to arrive; narrow
