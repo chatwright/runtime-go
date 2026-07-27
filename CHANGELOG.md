@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2
+
+- Telegram's emulator now captures and projects `sendRichMessage` and rich
+  `editMessageText` payloads, returning a normal `Message` with its assigned
+  `message_id` and preserving inline keyboards for scenario assertions.
+- It rejects malformed rich-message modes, malformed explicit blocks, and
+  invalid inline keyboards with Telegram-shaped HTTP 400 responses. This
+  prevents a bot's unsupported or invalid rich payload from becoming a
+  false-green Chatwright scenario.
+
 ## 0.1.0
 
 Initial extraction from
