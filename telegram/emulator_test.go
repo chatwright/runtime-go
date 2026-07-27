@@ -94,6 +94,81 @@ func TestHandleSendMessage_MalformedJSON_Returns400(t *testing.T) {
 	}
 }
 
+func TestMessageDeliveryRejectsMalformedInlineMarkup(t *testing.T) {
+	e := NewEmulator()
+	t.Cleanup(e.Close)
+
+	// A Telegram inline keyboard button needs exactly one action. The production
+	// API rejects this payload; accepting it in the emulator would hide a broken
+	// card until a real user opens it.
+	invalidMarkup := map[string]any{
+		"inline_keyboard": [][]map[string]any{{{"text": "No action"}}},
+	}
+
+	for _, tc := range []struct {
+		name    string
+		method  string
+		payload map[string]any
+	}{
+		{
+			name:   "sendMessage JSON",
+			method: "sendMessage",
+			payload: map[string]any{
+				"chat_id": 42, "text": "card", "reply_markup": invalidMarkup,
+			},
+		},
+		{
+			name:   "sendRichMessage JSON",
+			method: "sendRichMessage",
+			payload: map[string]any{
+				"chat_id":      42,
+				"rich_message": map[string]any{"html": "<b>card</b>"},
+				"reply_markup": invalidMarkup,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, envelope := postJSON(t, e.BotAPIURL()+"/botTEST/"+tc.method, tc.payload)
+			if status != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d: %v", status, http.StatusBadRequest, envelope)
+			}
+			if description, _ := envelope["description"].(string); !strings.Contains(description, "reply_markup") {
+				t.Fatalf("description = %q, want reply_markup validation error", description)
+			}
+		})
+	}
+}
+
+func TestSendMessageFormRejectsMalformedInlineMarkup(t *testing.T) {
+	e := NewEmulator()
+	t.Cleanup(e.Close)
+
+	form := url.Values{
+		"chat_id":      {"42"},
+		"text":         {"card"},
+		"reply_markup": {"{not valid JSON"},
+	}
+	response, err := http.Post(
+		e.BotAPIURL()+"/botTEST/sendMessage",
+		"application/x-www-form-urlencoded",
+		strings.NewReader(form.Encode()),
+	)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusBadRequest)
+	}
+	var envelope map[string]any
+	if err = json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if description, _ := envelope["description"].(string); !strings.Contains(description, "reply_markup") {
+		t.Fatalf("description = %q, want reply_markup validation error", description)
+	}
+}
+
 func TestHandleSendMessage_ResponseHasJournalAssignedMessageID(t *testing.T) {
 	e := NewEmulator()
 	t.Cleanup(e.Close)
