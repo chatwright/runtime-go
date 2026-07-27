@@ -44,10 +44,11 @@ const defaultSafetyTimeout = 5 * time.Second
 // User identifies a participant in a conversation. ID is a stable handle (e.g.
 // "alice"); Chatwright maps it to a deterministic per-platform numeric ID.
 type User struct {
-	ID        string
-	FirstName string
-	LastName  string
-	Username  string
+	ID           string
+	FirstName    string
+	LastName     string
+	Username     string
+	LanguageCode string
 }
 
 // Chatwright is a single test's conversational world: an emulated platform API

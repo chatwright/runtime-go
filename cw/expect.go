@@ -221,6 +221,14 @@ type Action struct {
 // can be asserted next.
 func (a *Action) Click() *Chat {
 	a.chat.cw.t.Helper()
+	if a.act.OpensInlineQuery {
+		a.chat.cw.t.Fatalf(
+			"chatwright: action %q opens inline mode; call SendInlineQuery(%q) to submit the resulting query",
+			a.act.Label,
+			a.act.InlineQuery,
+		)
+		return a.chat
+	}
 	a.chat.lastSent = time.Now()
 	var err error
 	if a.act.ID != "" {
@@ -257,6 +265,18 @@ func (a *Action) CopyText(want string) *Action {
 	a.chat.cw.t.Helper()
 	if a.act.CopyText != want {
 		a.chat.cw.t.Errorf("chatwright: action copy text = %q, want %q", a.act.CopyText, want)
+	}
+	return a
+}
+
+// InlineQuery asserts that this is a platform-native inline-mode action and
+// that it prefills want.
+func (a *Action) InlineQuery(want string) *Action {
+	a.chat.cw.t.Helper()
+	if !a.act.OpensInlineQuery {
+		a.chat.cw.t.Errorf("chatwright: action %q does not open inline mode", a.act.Label)
+	} else if a.act.InlineQuery != want {
+		a.chat.cw.t.Errorf("chatwright: action inline query = %q, want %q", a.act.InlineQuery, want)
 	}
 	return a
 }

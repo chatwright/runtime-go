@@ -38,10 +38,11 @@ func (cw *Chatwright) PrivateChat(u User) *Chat {
 		cw:     cw,
 		chatID: id,
 		user: platform.User{
-			ID:        id,
-			FirstName: u.FirstName,
-			LastName:  u.LastName,
-			Username:  u.Username,
+			ID:           id,
+			FirstName:    u.FirstName,
+			LastName:     u.LastName,
+			Username:     u.Username,
+			LanguageCode: u.LanguageCode,
 		},
 	}
 	cw.chats[id] = c

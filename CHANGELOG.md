@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0 (2026-07-27)
+
+- Added Telegram inline-query scenario support, including chosen-chat share
+  actions, photo result inspection, selected-result delivery with opaque
+  `inline_message_id`, and later `editMessageCaption` observation.
+- Added Telegram `language_code` fidelity for message, callback-query, and
+  inline-query users, enabling deterministic localisation journeys.
+
+## 0.5.1 (2026-07-26)
+
+- Updated the Telegram API and framework dependencies used by the emulator.
+
 ## 0.5.0 (2026-07-25)
 
 - Renamed `observe.Verdict` to `observe.Freshness` (values unchanged:

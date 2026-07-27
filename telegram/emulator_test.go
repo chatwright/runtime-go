@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bots-go-framework/bots-api-telegram/tgbotapi"
+
 	"chatwright.dev/runtime/platform"
 )
 
@@ -265,6 +267,197 @@ func TestSubmitText_CapturesFormEncodedInlineWebhookResponse(t *testing.T) {
 	message, ok := e.WaitForMessage(42, 0, time.Second)
 	if !ok || message.Text != "🎮 Games" {
 		t.Fatalf("message = %+v, ok=%v", message, ok)
+	}
+}
+
+func TestSubmitUserActions_IncludeLanguageCode(t *testing.T) {
+	e := NewEmulator()
+	t.Cleanup(e.Close)
+
+	var received []tgbotapi.Update
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var update tgbotapi.Update
+		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+			t.Errorf("decode update: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		received = append(received, update)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(webhook.Close)
+	e.SetWebhook(webhook.URL, webhook.Client())
+
+	user := platform.User{ID: 7, FirstName: "Алиса", Username: "alisa", LanguageCode: "ru"}
+	if err := e.SubmitText(42, user, "/pref"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.SubmitClick(42, user, "pref?a=players", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.SubmitInlineQuery(user, "preferans:invite:game-42", "next"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(received) != 3 {
+		t.Fatalf("received %d updates, want 3", len(received))
+	}
+	if got := received[0].Message.From.LanguageCode; got != "ru" {
+		t.Errorf("message.from.language_code = %q, want ru", got)
+	}
+	if got := received[1].CallbackQuery.From.LanguageCode; got != "ru" {
+		t.Errorf("callback_query.from.language_code = %q, want ru", got)
+	}
+	if got := received[2].InlineQuery.From.LanguageCode; got != "ru" {
+		t.Errorf("inline_query.from.language_code = %q, want ru", got)
+	}
+}
+
+func TestSubmitInlineQuery_CapturesPhotoAnswerFromWebhookResponse(t *testing.T) {
+	e := NewEmulator()
+	t.Cleanup(e.Close)
+	var received tgbotapi.Update
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Errorf("decode update: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"method":          "answerInlineQuery",
+			"inline_query_id": received.InlineQuery.ID,
+			"cache_time":      0,
+			"is_personal":     true,
+			"results": []map[string]any{{
+				"type":          "photo",
+				"id":            "preferans-invite",
+				"title":         "Join Alice's Preferans table",
+				"description":   "🪙 50 reserve · ⏱ 60 seconds",
+				"photo_url":     "https://sneat.games/assets/preferans-invite.jpg",
+				"thumbnail_url": "https://sneat.games/assets/preferans-invite-thumb.jpg",
+				"caption":       "Alice invited you to play Preferans.",
+				"reply_markup": map[string]any{"inline_keyboard": [][]map[string]any{{
+					{"text": "🃏 Join table", "url": "https://t.me/SneatBot?start=pref_abc"},
+				}}},
+			}},
+		})
+	}))
+	t.Cleanup(webhook.Close)
+	e.SetWebhook(webhook.URL, webhook.Client())
+
+	queryID, err := e.SubmitInlineQuery(
+		platform.User{ID: 7, FirstName: "Alice", Username: "alice"},
+		"preferans:invite:game-42",
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if received.InlineQuery == nil {
+		t.Fatal("webhook update has no inline_query")
+	}
+	if received.InlineQuery.ID != queryID ||
+		received.InlineQuery.Query != "preferans:invite:game-42" ||
+		received.InlineQuery.From.ID != 7 {
+		t.Fatalf("inline query = %+v, queryID=%q", received.InlineQuery, queryID)
+	}
+
+	answer, ok := e.WaitForInlineQueryAnswer(queryID, time.Second)
+	if !ok {
+		t.Fatal("inline query answer was not captured")
+	}
+	if !answer.IsPersonal || len(answer.Results) != 1 {
+		t.Fatalf("answer = %+v", answer)
+	}
+	result := answer.Results[0]
+	if result.Type != "photo" ||
+		result.PhotoURL != "https://sneat.games/assets/preferans-invite.jpg" ||
+		result.ThumbnailURL != "https://sneat.games/assets/preferans-invite-thumb.jpg" ||
+		result.Caption != "Alice invited you to play Preferans." {
+		t.Fatalf("photo result = %+v", result)
+	}
+	if len(result.Actions) != 1 ||
+		len(result.Actions[0]) != 1 ||
+		result.Actions[0][0].Label != "🃏 Join table" ||
+		result.Actions[0][0].URL != "https://t.me/SneatBot?start=pref_abc" {
+		t.Fatalf("photo result actions = %+v", result.Actions)
+	}
+}
+
+func TestAnswerInlineQuery_FormEncodedAndUnknownQueryValidation(t *testing.T) {
+	e := NewEmulator()
+	t.Cleanup(e.Close)
+	queryID, err := e.SubmitInlineQuery(platform.User{ID: 7, FirstName: "Alice"}, "invite", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := json.Marshal([]map[string]any{{
+		"type":      "photo",
+		"id":        "invite",
+		"photo_url": "https://sneat.games/preferans.jpg",
+		"thumb_url": "https://sneat.games/preferans-thumb.jpg",
+		"caption":   "Join the table",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.PostForm(e.BotAPIURL()+"/botTEST/answerInlineQuery", url.Values{
+		"inline_query_id": {queryID},
+		"results":         {string(results)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
+	answer, ok := e.WaitForInlineQueryAnswer(queryID, time.Second)
+	if !ok || answer.Results[0].ThumbnailURL != "https://sneat.games/preferans-thumb.jpg" {
+		t.Fatalf("answer = %+v, ok=%v", answer, ok)
+	}
+
+	status, env := postJSON(t, e.BotAPIURL()+"/botTEST/answerInlineQuery", map[string]any{
+		"inline_query_id": "unknown",
+		"results": []map[string]any{{
+			"type":      "photo",
+			"id":        "invite",
+			"photo_url": "https://sneat.games/preferans.jpg",
+		}},
+	})
+	if status != http.StatusBadRequest ||
+		!strings.Contains(env["description"].(string), "not found") {
+		t.Fatalf("status=%d envelope=%v", status, env)
+	}
+}
+
+func TestSwitchInlineQueryChosenChat_NormalizesShareAction(t *testing.T) {
+	e := NewEmulator()
+	t.Cleanup(e.Close)
+	status, env := postJSON(t, e.BotAPIURL()+"/botTEST/sendMessage", map[string]any{
+		"chat_id": 42,
+		"text":    "Invite a friend",
+		"reply_markup": map[string]any{"inline_keyboard": [][]map[string]any{{
+			{
+				"text": "📨 Choose friend",
+				"switch_inline_query_chosen_chat": map[string]any{
+					"query":            "preferans:invite:game-42",
+					"allow_user_chats": true,
+				},
+			},
+		}}},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("status=%d envelope=%v", status, env)
+	}
+	message, ok := e.WaitForMessage(42, 0, time.Second)
+	if !ok {
+		t.Fatal("message not captured")
+	}
+	action := message.Actions[0][0]
+	if !action.OpensInlineQuery || action.InlineQuery != "preferans:invite:game-42" {
+		t.Fatalf("share action = %+v", action)
 	}
 }
 

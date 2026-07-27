@@ -12,6 +12,7 @@ package telegram
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -37,6 +38,9 @@ type tgPlatform struct{}
 func (tgPlatform) Name() string { return "telegram" }
 
 func (tgPlatform) Start() platform.Emulator { return NewEmulator() }
+
+var _ platform.InlineQueryEmulator = (*Emulator)(nil)
+var _ platform.ChosenInlineResultEmulator = (*Emulator)(nil)
 
 // StartAt implements platform.AddrPlatform: it boots the emulator bound to a
 // caller-chosen address instead of a random port.
@@ -111,13 +115,30 @@ type Emulator struct {
 	webhookURL   string
 	httpClient   *http.Client
 	pending      []tgbotapi.Update // queued for getUpdates while no webhook is configured
+
+	pendingInlineQueries map[string]inlineQueryState
+	inlineAnswers        map[string]platform.InlineQueryAnswer
+	selectedInline       map[string]selectedInlineState
+}
+
+type inlineQueryState struct {
+	user  platform.User
+	query string
+}
+
+type selectedInlineState struct {
+	result  platform.InlineQueryResult
+	version int
 }
 
 // NewEmulator starts a fake Telegram Bot API server on a random local port.
 func NewEmulator() *Emulator {
 	e := &Emulator{
-		nextMsgID: make(map[int64]int),
-		updated:   make(chan struct{}),
+		nextMsgID:            make(map[int64]int),
+		updated:              make(chan struct{}),
+		pendingInlineQueries: make(map[string]inlineQueryState),
+		inlineAnswers:        make(map[string]platform.InlineQueryAnswer),
+		selectedInline:       make(map[string]selectedInlineState),
 	}
 	e.server = httptest.NewServer(http.HandlerFunc(e.handle))
 	return e
@@ -137,8 +158,11 @@ func NewEmulatorAt(addr string) (*Emulator, error) {
 		return nil, fmt.Errorf("chatwright: listen on %q: %w", addr, err)
 	}
 	e := &Emulator{
-		nextMsgID: make(map[int64]int),
-		updated:   make(chan struct{}),
+		nextMsgID:            make(map[int64]int),
+		updated:              make(chan struct{}),
+		pendingInlineQueries: make(map[string]inlineQueryState),
+		inlineAnswers:        make(map[string]platform.InlineQueryAnswer),
+		selectedInline:       make(map[string]selectedInlineState),
 	}
 	e.server = &httptest.Server{
 		Listener: ln,
@@ -223,10 +247,11 @@ func (e *Emulator) SubmitText(chatID int64, user platform.User, text string) err
 		Message: &tgbotapi.Message{
 			MessageID: msgID,
 			From: &tgbotapi.User{
-				ID:        user.ID,
-				FirstName: user.FirstName,
-				LastName:  user.LastName,
-				UserName:  user.Username,
+				ID:           user.ID,
+				FirstName:    user.FirstName,
+				LastName:     user.LastName,
+				UserName:     user.Username,
+				LanguageCode: user.LanguageCode,
 			},
 			Chat: &tgbotapi.Chat{ID: chatID, Type: "private", FirstName: user.FirstName},
 			Date: int(time.Now().Unix()),
@@ -252,10 +277,11 @@ func (e *Emulator) SubmitClick(chatID int64, user platform.User, data string, ta
 		CallbackQuery: &tgbotapi.CallbackQuery{
 			ID: "cb" + strconv.Itoa(updateID),
 			From: &tgbotapi.User{
-				ID:        user.ID,
-				FirstName: user.FirstName,
-				LastName:  user.LastName,
-				UserName:  user.Username,
+				ID:           user.ID,
+				FirstName:    user.FirstName,
+				LastName:     user.LastName,
+				UserName:     user.Username,
+				LanguageCode: user.LanguageCode,
 			},
 			Data: data,
 			Message: &tgbotapi.Message{
@@ -266,6 +292,137 @@ func (e *Emulator) SubmitClick(chatID int64, user platform.User, data string, ta
 		},
 	}
 	return e.deliver(update, webhookURL, client)
+}
+
+// SubmitInlineQuery delivers Telegram's chat-independent inline_query update.
+// It deliberately does not journal a chat message: opening inline mode and
+// receiving results do not post anything to the selected chat.
+func (e *Emulator) SubmitInlineQuery(user platform.User, query, offset string) (string, error) {
+	e.mu.Lock()
+	updateID := e.reserveUpdateIDLocked()
+	queryID := "iq" + strconv.Itoa(updateID)
+	e.pendingInlineQueries[queryID] = inlineQueryState{user: user, query: query}
+	webhookURL, client := e.webhookURL, e.httpClient
+	e.mu.Unlock()
+
+	update := tgbotapi.Update{
+		UpdateID: updateID,
+		InlineQuery: &tgbotapi.InlineQuery{
+			ID: queryID,
+			From: &tgbotapi.User{
+				ID:           user.ID,
+				FirstName:    user.FirstName,
+				LastName:     user.LastName,
+				UserName:     user.Username,
+				LanguageCode: user.LanguageCode,
+			},
+			Query:  query,
+			Offset: offset,
+		},
+	}
+	if err := e.deliver(update, webhookURL, client); err != nil {
+		return queryID, err
+	}
+	return queryID, nil
+}
+
+// WaitForInlineQueryAnswer waits for the bot to answer queryID.
+func (e *Emulator) WaitForInlineQueryAnswer(queryID string, timeout time.Duration) (*platform.InlineQueryAnswer, bool) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		e.mu.Lock()
+		if answer, ok := e.inlineAnswers[queryID]; ok {
+			copy := answer
+			e.mu.Unlock()
+			return &copy, true
+		}
+		ch := e.updated
+		e.mu.Unlock()
+
+		select {
+		case <-ch:
+		case <-timer.C:
+			return nil, false
+		}
+	}
+}
+
+func (e *Emulator) SelectInlineQueryResult(
+	user platform.User,
+	queryID, resultID string,
+) (string, error) {
+	e.mu.Lock()
+	query, found := e.pendingInlineQueries[queryID]
+	answer, answered := e.inlineAnswers[queryID]
+	if !found || !answered {
+		e.mu.Unlock()
+		return "", fmt.Errorf("inline query %q is not answered", queryID)
+	}
+	var selected platform.InlineQueryResult
+	for _, result := range answer.Results {
+		if result.ID == resultID {
+			selected = result
+			break
+		}
+	}
+	if selected.ID == "" {
+		e.mu.Unlock()
+		return "", fmt.Errorf("inline result %q was not returned for %q", resultID, queryID)
+	}
+	if user.ID == 0 {
+		user = query.user
+	}
+	updateID := e.reserveUpdateIDLocked()
+	inlineMessageID := fmt.Sprintf("inline-%s-%d", queryID, updateID)
+	e.selectedInline[inlineMessageID] = selectedInlineState{result: selected}
+	webhookURL, client := e.webhookURL, e.httpClient
+	e.mu.Unlock()
+
+	update := tgbotapi.Update{
+		UpdateID: updateID,
+		ChosenInlineResult: &tgbotapi.ChosenInlineResult{
+			ResultID: resultID,
+			From: &tgbotapi.User{
+				ID:           user.ID,
+				FirstName:    user.FirstName,
+				LastName:     user.LastName,
+				UserName:     user.Username,
+				LanguageCode: user.LanguageCode,
+			},
+			InlineMessageID: inlineMessageID,
+			Query:           query.query,
+		},
+	}
+	if err := e.deliver(update, webhookURL, client); err != nil {
+		return "", err
+	}
+	return inlineMessageID, nil
+}
+
+func (e *Emulator) WaitForInlineResultEdit(
+	inlineMessageID string,
+	afterVersion int,
+	timeout time.Duration,
+) (*platform.InlineQueryResult, int, bool) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		e.mu.Lock()
+		state, ok := e.selectedInline[inlineMessageID]
+		if ok && state.version > afterVersion {
+			result := state.result
+			e.mu.Unlock()
+			return &result, state.version, true
+		}
+		ch := e.updated
+		e.mu.Unlock()
+		select {
+		case <-ch:
+		case <-timer.C:
+			return nil, 0, false
+		}
+	}
 }
 
 // deliver pushes update to webhookURL over HTTP if one is configured — this
@@ -391,6 +548,10 @@ func (e *Emulator) handle(w http.ResponseWriter, r *http.Request) {
 		e.handleSendRichMessageDraft(w, r)
 	case "editMessageText":
 		e.handleEditMessageText(w, r, token)
+	case "editMessageCaption":
+		e.handleEditMessageCaption(w, r)
+	case "answerInlineQuery":
+		e.handleAnswerInlineQuery(w, r)
 	default:
 		if acknowledgedMethods[method] {
 			writeResult(w, true)
@@ -398,6 +559,64 @@ func (e *Emulator) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		e.handleUnsupported(w, r, token, method)
 	}
+}
+
+func (e *Emulator) handleEditMessageCaption(w http.ResponseWriter, r *http.Request) {
+	inlineMessageID, caption, markup, err := parseEditMessageCaption(r)
+	if err != nil {
+		writeError(w, err.Error())
+		return
+	}
+	if inlineMessageID == "" {
+		writeError(w, "editMessageCaption: inline_message_id is required")
+		return
+	}
+	e.mu.Lock()
+	state, ok := e.selectedInline[inlineMessageID]
+	if !ok {
+		e.mu.Unlock()
+		writeError(w, "editMessageCaption: inline message not found")
+		return
+	}
+	state.result.Caption = caption
+	if markup != nil {
+		state.result.Actions = actionsFromMarkup(markup)
+	}
+	state.version++
+	e.selectedInline[inlineMessageID] = state
+	e.wakeLocked()
+	e.mu.Unlock()
+	writeResult(w, true)
+}
+
+func (e *Emulator) handleAnswerInlineQuery(w http.ResponseWriter, r *http.Request) {
+	answer, err := parseInlineQueryAnswer(r)
+	if err != nil {
+		writeError(w, err.Error())
+		return
+	}
+	if answer.QueryID == "" {
+		writeError(w, "answerInlineQuery: inline_query_id is required")
+		return
+	}
+	if len(answer.Results) == 0 {
+		writeError(w, "answerInlineQuery: results are required")
+		return
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, ok := e.pendingInlineQueries[answer.QueryID]; !ok {
+		writeError(w, "answerInlineQuery: inline query not found")
+		return
+	}
+	if _, answered := e.inlineAnswers[answer.QueryID]; answered {
+		writeError(w, "answerInlineQuery: inline query was already answered")
+		return
+	}
+	e.inlineAnswers[answer.QueryID] = answer
+	e.wakeLocked()
+	writeResult(w, true)
 }
 
 // handleSendRichMessage emulates Bot API 10.1/10.2 native rich messages. The
@@ -809,11 +1028,116 @@ func actionsFromMarkup(markup *tgbotapi.InlineKeyboardMarkup) [][]platform.Actio
 			if b.CopyText != nil {
 				action.CopyText = b.CopyText.Text
 			}
+			switch {
+			case b.SwitchInlineQueryChosenChat != nil:
+				action.OpensInlineQuery = true
+				action.InlineQuery = b.SwitchInlineQueryChosenChat.Query
+			case b.SwitchInlineQuery != nil:
+				action.OpensInlineQuery = true
+				action.InlineQuery = *b.SwitchInlineQuery
+			case b.SwitchInlineQueryCurrentChat != nil:
+				action.OpensInlineQuery = true
+				action.InlineQuery = *b.SwitchInlineQueryCurrentChat
+			}
 			arow = append(arow, action)
 		}
 		actions = append(actions, arow)
 	}
 	return actions
+}
+
+type inlineQueryResultWire struct {
+	Type                string                         `json:"type"`
+	ID                  string                         `json:"id"`
+	Title               string                         `json:"title,omitempty"`
+	Description         string                         `json:"description,omitempty"`
+	PhotoURL            string                         `json:"photo_url,omitempty"`
+	ThumbnailURL        string                         `json:"thumbnail_url,omitempty"`
+	LegacyThumbnailURL  string                         `json:"thumb_url,omitempty"`
+	Caption             string                         `json:"caption,omitempty"`
+	InputMessageContent json.RawMessage                `json:"input_message_content,omitempty"`
+	ReplyMarkup         *tgbotapi.InlineKeyboardMarkup `json:"reply_markup,omitempty"`
+}
+
+type inputMessageContentWire struct {
+	MessageText string                `json:"message_text,omitempty"`
+	RichMessage *inputRichMessageWire `json:"rich_message,omitempty"`
+}
+
+func parseInlineQueryAnswer(r *http.Request) (platform.InlineQueryAnswer, error) {
+	var answer platform.InlineQueryAnswer
+	var resultsJSON []byte
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		var payload struct {
+			QueryID    string          `json:"inline_query_id"`
+			Results    json.RawMessage `json:"results"`
+			CacheTime  int             `json:"cache_time"`
+			IsPersonal bool            `json:"is_personal"`
+			NextOffset string          `json:"next_offset"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			return answer, fmt.Errorf("answerInlineQuery: invalid JSON body: %w", err)
+		}
+		answer.QueryID = payload.QueryID
+		answer.CacheTime = payload.CacheTime
+		answer.IsPersonal = payload.IsPersonal
+		answer.NextOffset = payload.NextOffset
+		resultsJSON = payload.Results
+	} else {
+		if err := r.ParseForm(); err != nil {
+			return answer, fmt.Errorf("answerInlineQuery: invalid form body: %w", err)
+		}
+		answer.QueryID = r.FormValue("inline_query_id")
+		answer.CacheTime, _ = strconv.Atoi(r.FormValue("cache_time"))
+		answer.IsPersonal, _ = strconv.ParseBool(r.FormValue("is_personal"))
+		answer.NextOffset = r.FormValue("next_offset")
+		resultsJSON = []byte(r.FormValue("results"))
+	}
+	if len(bytes.TrimSpace(resultsJSON)) == 0 {
+		return answer, errors.New("answerInlineQuery: results are required")
+	}
+
+	var wireResults []inlineQueryResultWire
+	if err := json.Unmarshal(resultsJSON, &wireResults); err != nil {
+		return answer, fmt.Errorf("answerInlineQuery: invalid results: %w", err)
+	}
+	answer.Results = make([]platform.InlineQueryResult, len(wireResults))
+	for i, wire := range wireResults {
+		if wire.Type == "" {
+			return answer, fmt.Errorf("answerInlineQuery: result %d type is required", i)
+		}
+		if wire.ID == "" {
+			return answer, fmt.Errorf("answerInlineQuery: result %d id is required", i)
+		}
+		if wire.Type == "photo" && wire.PhotoURL == "" {
+			return answer, fmt.Errorf("answerInlineQuery: photo result %d photo_url is required", i)
+		}
+		result := platform.InlineQueryResult{
+			Type:         wire.Type,
+			ID:           wire.ID,
+			Title:        wire.Title,
+			Description:  wire.Description,
+			PhotoURL:     wire.PhotoURL,
+			ThumbnailURL: wire.ThumbnailURL,
+			Caption:      wire.Caption,
+			Actions:      actionsFromMarkup(wire.ReplyMarkup),
+		}
+		if result.ThumbnailURL == "" {
+			result.ThumbnailURL = wire.LegacyThumbnailURL
+		}
+		if len(wire.InputMessageContent) > 0 {
+			var content inputMessageContentWire
+			if err := json.Unmarshal(wire.InputMessageContent, &content); err != nil {
+				return answer, fmt.Errorf("answerInlineQuery: invalid input_message_content for result %d: %w", i, err)
+			}
+			result.Text = content.MessageText
+			if result.Text == "" && content.RichMessage != nil {
+				result.Text = richMessageText(*content.RichMessage)
+			}
+		}
+		answer.Results[i] = result
+	}
+	return answer, nil
 }
 
 // normalize converts a journal entry into a neutral message.
@@ -908,6 +1232,33 @@ func parseEditMessageText(r *http.Request) (chatID int64, messageID int, text st
 		}
 	}
 	return parseChatID(r.FormValue("chat_id")), messageID, r.FormValue("text"), rich, markup, nil
+}
+
+func parseEditMessageCaption(
+	r *http.Request,
+) (inlineMessageID, caption string, markup *tgbotapi.InlineKeyboardMarkup, err error) {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		var payload struct {
+			InlineMessageID string                         `json:"inline_message_id"`
+			Caption         string                         `json:"caption"`
+			ReplyMarkup     *tgbotapi.InlineKeyboardMarkup `json:"reply_markup"`
+		}
+		if err = json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			return "", "", nil, fmt.Errorf("editMessageCaption: invalid JSON body: %w", err)
+		}
+		return payload.InlineMessageID, payload.Caption, payload.ReplyMarkup, nil
+	}
+	if err = r.ParseForm(); err != nil {
+		return "", "", nil, fmt.Errorf("editMessageCaption: invalid form body: %w", err)
+	}
+	if raw := r.FormValue("reply_markup"); raw != "" {
+		var value tgbotapi.InlineKeyboardMarkup
+		if err = json.Unmarshal([]byte(raw), &value); err != nil {
+			return "", "", nil, fmt.Errorf("editMessageCaption: invalid reply_markup: %w", err)
+		}
+		markup = &value
+	}
+	return r.FormValue("inline_message_id"), r.FormValue("caption"), markup, nil
 }
 
 func parseRichMessageRequest(
