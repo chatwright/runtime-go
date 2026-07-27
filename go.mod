@@ -5,14 +5,14 @@ go 1.26.1
 require (
 	chatwright.dev/sdk v0.3.0
 	github.com/anthropics/anthropic-sdk-go v1.59.0
-	github.com/bots-go-framework/bots-api-telegram v0.15.0
+	github.com/bots-go-framework/bots-api-telegram v0.15.5
 	github.com/bots-go-framework/bots-api-whatsapp v0.3.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 )
 
 require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
-	github.com/bots-go-framework/bots-go-core v0.2.5 // indirect
+	github.com/bots-go-framework/bots-go-core v0.2.6 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect

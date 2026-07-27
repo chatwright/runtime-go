@@ -14,19 +14,72 @@ import (
 
 // User is a neutral participant identity within a scenario.
 type User struct {
-	ID        int64
-	FirstName string
-	LastName  string
-	Username  string
+	ID           int64
+	FirstName    string
+	LastName     string
+	Username     string
+	LanguageCode string
 }
 
 // Action is a neutral interactive action (a button) captured from a bot message.
 // Telegram inline buttons and WhatsApp interactive replies both normalize to it.
 type Action struct {
-	Label    string `json:"label"`              // user-visible text (Telegram button text / WhatsApp reply title)
-	ID       string `json:"id"`                 // stable identifier (Telegram callback_data / WhatsApp reply id)
-	URL      string `json:"url"`                // set for link actions
-	CopyText string `json:"copyText,omitempty"` // text copied by a platform-native copy action
+	Label            string `json:"label"`                      // user-visible text (Telegram button text / WhatsApp reply title)
+	ID               string `json:"id"`                         // stable identifier (Telegram callback_data / WhatsApp reply id)
+	URL              string `json:"url"`                        // set for link actions
+	CopyText         string `json:"copyText,omitempty"`         // text copied by a platform-native copy action
+	InlineQuery      string `json:"inlineQuery,omitempty"`      // query prefilled by a platform-native inline-share action
+	OpensInlineQuery bool   `json:"opensInlineQuery,omitempty"` // true for a platform-native action that opens inline mode
+}
+
+// InlineQueryResult is one normalized result returned by a bot for an inline
+// query. Media remains a result property rather than a chat message: selecting
+// a result is a separate client action, and answerInlineQuery itself does not
+// send a message.
+type InlineQueryResult struct {
+	Type         string     `json:"type"`
+	ID           string     `json:"id"`
+	Title        string     `json:"title,omitempty"`
+	Description  string     `json:"description,omitempty"`
+	Text         string     `json:"text,omitempty"`
+	PhotoURL     string     `json:"photoUrl,omitempty"`
+	ThumbnailURL string     `json:"thumbnailUrl,omitempty"`
+	Caption      string     `json:"caption,omitempty"`
+	Actions      [][]Action `json:"actions,omitempty"`
+}
+
+// InlineQueryAnswer is the normalized observable value of answerInlineQuery.
+type InlineQueryAnswer struct {
+	QueryID    string              `json:"queryId"`
+	Results    []InlineQueryResult `json:"results"`
+	CacheTime  int                 `json:"cacheTime,omitempty"`
+	IsPersonal bool                `json:"isPersonal,omitempty"`
+	NextOffset string              `json:"nextOffset,omitempty"`
+}
+
+// InlineQueryEmulator is the optional platform capability used by inline-mode
+// scenarios. It is separate from Emulator because most chat platforms have no
+// Telegram-style inline-query surface.
+type InlineQueryEmulator interface {
+	// SubmitInlineQuery delivers an inline query and returns its platform query
+	// identifier. The result is observed separately via WaitForInlineQueryAnswer.
+	SubmitInlineQuery(user User, query, offset string) (queryID string, err error)
+
+	// WaitForInlineQueryAnswer waits for the bot's answer to queryID.
+	WaitForInlineQueryAnswer(queryID string, timeout time.Duration) (*InlineQueryAnswer, bool)
+}
+
+// ChosenInlineResultEmulator is the optional follow-up capability for
+// selecting an answered inline result and observing later inline-message
+// edits. Telegram supplies an opaque inline_message_id, never a destination
+// chat ID.
+type ChosenInlineResultEmulator interface {
+	SelectInlineQueryResult(user User, queryID, resultID string) (inlineMessageID string, err error)
+	WaitForInlineResultEdit(
+		inlineMessageID string,
+		afterVersion int,
+		timeout time.Duration,
+	) (*InlineQueryResult, int, bool)
 }
 
 // Message is a neutral bot message captured from a platform's outbound API call.
