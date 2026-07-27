@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bots-go-framework/bots-api-telegram/tgbotapi"
 
@@ -414,11 +415,15 @@ func (e *Emulator) handleSendRichMessage(w http.ResponseWriter, r *http.Request,
 		writeError(w, "sendRichMessage: chat_id is required")
 		return
 	}
-	text := richMessageText(rich)
-	if text == "" {
-		writeError(w, "sendRichMessage: rich_message is required")
+	if err := validateInputRichMessage(rich); err != nil {
+		writeError(w, "sendRichMessage: invalid rich_message: "+err.Error())
 		return
 	}
+	if err := validateInlineKeyboardMarkup(markup); err != nil {
+		writeError(w, "sendRichMessage: invalid reply_markup: "+err.Error())
+		return
+	}
+	text := richMessageText(rich)
 
 	e.mu.Lock()
 	messageID := e.reserveMessageIDLocked(chatID)
@@ -448,8 +453,12 @@ func (e *Emulator) handleSendRichMessageDraft(w http.ResponseWriter, r *http.Req
 		writeError(w, err.Error())
 		return
 	}
-	if chatID == 0 || richMessageText(rich) == "" {
-		writeError(w, "sendRichMessageDraft: chat_id and rich_message are required")
+	if chatID == 0 {
+		writeError(w, "sendRichMessageDraft: chat_id is required")
+		return
+	}
+	if err := validateInputRichMessage(rich); err != nil {
+		writeError(w, "sendRichMessageDraft: invalid rich_message: "+err.Error())
 		return
 	}
 	writeResult(w, true)
@@ -578,10 +587,18 @@ func (e *Emulator) handleEditMessageText(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if rich != nil {
+		if err := validateInputRichMessage(*rich); err != nil {
+			writeError(w, "editMessageText: invalid rich_message: "+err.Error())
+			return
+		}
 		text = richMessageText(*rich)
 	}
 	if text == "" {
 		writeError(w, "editMessageText: text or rich_message is required")
+		return
+	}
+	if err := validateInlineKeyboardMarkup(markup); err != nil {
+		writeError(w, "editMessageText: invalid reply_markup: "+err.Error())
 		return
 	}
 
@@ -862,9 +879,10 @@ func parseSendMessage(r *http.Request) (chatID int64, text string, markup *tgbot
 	}
 	if rm := r.FormValue("reply_markup"); rm != "" {
 		var m tgbotapi.InlineKeyboardMarkup
-		if json.Unmarshal([]byte(rm), &m) == nil {
-			markup = &m
+		if err := json.Unmarshal([]byte(rm), &m); err != nil {
+			return 0, "", nil, fmt.Errorf("sendMessage: invalid reply_markup: %w", err)
 		}
+		markup = &m
 	}
 	return parseChatID(r.FormValue("chat_id")), r.FormValue("text"), markup, nil
 }
@@ -903,9 +921,10 @@ func parseEditMessageText(r *http.Request) (chatID int64, messageID int, text st
 	}
 	if rm := r.FormValue("reply_markup"); rm != "" {
 		var m tgbotapi.InlineKeyboardMarkup
-		if json.Unmarshal([]byte(rm), &m) == nil {
-			markup = &m
+		if err := json.Unmarshal([]byte(rm), &m); err != nil {
+			return 0, 0, "", nil, nil, fmt.Errorf("editMessageText: invalid reply_markup: %w", err)
 		}
+		markup = &m
 	}
 	return parseChatID(r.FormValue("chat_id")), messageID, r.FormValue("text"), rich, markup, nil
 }
@@ -936,9 +955,10 @@ func parseRichMessageRequest(
 	}
 	if rm := r.FormValue("reply_markup"); rm != "" {
 		var value tgbotapi.InlineKeyboardMarkup
-		if json.Unmarshal([]byte(rm), &value) == nil {
-			markup = &value
+		if err := json.Unmarshal([]byte(rm), &value); err != nil {
+			return 0, rich, nil, fmt.Errorf("%s: invalid reply_markup: %w", method, err)
 		}
+		markup = &value
 	}
 	return parseChatID(r.FormValue("chat_id")), rich, markup, nil
 }
@@ -964,6 +984,13 @@ type inputRichBlockWire struct {
 	Blocks     []inputRichBlockWire     `json:"blocks,omitempty"`
 	Items      []inputRichBlockListWire `json:"items,omitempty"`
 	Cells      [][]richBlockCellWire    `json:"cells,omitempty"`
+	Name       string                   `json:"name,omitempty"`
+	Location   json.RawMessage          `json:"location,omitempty"`
+	Animation  json.RawMessage          `json:"animation,omitempty"`
+	Audio      json.RawMessage          `json:"audio,omitempty"`
+	Photo      json.RawMessage          `json:"photo,omitempty"`
+	Video      json.RawMessage          `json:"video,omitempty"`
+	VoiceNote  json.RawMessage          `json:"voice_note,omitempty"`
 }
 
 type inputRichBlockListWire struct {
@@ -974,6 +1001,205 @@ type inputRichBlockListWire struct {
 
 type richBlockCellWire struct {
 	Text json.RawMessage `json:"text,omitempty"`
+}
+
+// validateInputRichMessage deliberately checks the wire contract at the
+// emulator boundary instead of accepting any JSON object.  Rich messages have
+// three mutually-exclusive input modes: the Bot API 10.1 HTML/Markdown modes
+// and the Bot API 10.2 explicit-blocks mode.  Letting an invalid combination
+// pass here was the exact false-green that hid the live /pref failure.
+func validateInputRichMessage(rich inputRichMessageWire) error {
+	modes := 0
+	if rich.HTML != "" {
+		modes++
+		if !utf8.ValidString(rich.HTML) {
+			return fmt.Errorf("html is not valid UTF-8")
+		}
+	}
+	if rich.Markdown != "" {
+		modes++
+		if !utf8.ValidString(rich.Markdown) {
+			return fmt.Errorf("markdown is not valid UTF-8")
+		}
+	}
+	if len(rich.Blocks) > 0 {
+		modes++
+		for i, block := range rich.Blocks {
+			if err := validateInputRichBlock(block); err != nil {
+				return fmt.Errorf("blocks[%d]: %w", i, err)
+			}
+		}
+	}
+	switch modes {
+	case 0:
+		return fmt.Errorf("one of html, markdown, or blocks is required")
+	case 1:
+		return nil
+	default:
+		return fmt.Errorf("only one of html, markdown, or blocks may be used")
+	}
+}
+
+func validateInputRichBlock(block inputRichBlockWire) error {
+	if !richBlockTypes[block.Type] {
+		return fmt.Errorf("unsupported block type %q", block.Type)
+	}
+	textRequired := block.Type == tgbotapi.RichBlockTypeParagraph ||
+		block.Type == tgbotapi.RichBlockTypeSectionHeading ||
+		block.Type == tgbotapi.RichBlockTypePreformatted ||
+		block.Type == tgbotapi.RichBlockTypeFooter ||
+		block.Type == tgbotapi.RichBlockTypePullQuotation ||
+		block.Type == tgbotapi.RichBlockTypeThinking
+	if textRequired {
+		if err := validateRichText(block.Text, "text"); err != nil {
+			return err
+		}
+	}
+	switch block.Type {
+	case tgbotapi.RichBlockTypeMathematicalExpression:
+		if strings.TrimSpace(block.Expression) == "" {
+			return fmt.Errorf("expression is required")
+		}
+	case tgbotapi.RichBlockTypeAnchor:
+		if strings.TrimSpace(block.Name) == "" {
+			return fmt.Errorf("name is required")
+		}
+	case tgbotapi.RichBlockTypeList:
+		if len(block.Items) == 0 {
+			return fmt.Errorf("items is required")
+		}
+		for i, item := range block.Items {
+			if len(item.Blocks) == 0 {
+				return fmt.Errorf("items[%d].blocks is required", i)
+			}
+			for j, child := range item.Blocks {
+				if err := validateInputRichBlock(child); err != nil {
+					return fmt.Errorf("items[%d].blocks[%d]: %w", i, j, err)
+				}
+			}
+		}
+	case tgbotapi.RichBlockTypeBlockQuotation,
+		tgbotapi.RichBlockTypeCollage,
+		tgbotapi.RichBlockTypeSlideshow:
+		if err := validateRichBlocks(block.Blocks); err != nil {
+			return err
+		}
+	case tgbotapi.RichBlockTypeTable:
+		if len(block.Cells) == 0 {
+			return fmt.Errorf("cells is required")
+		}
+		for row, cells := range block.Cells {
+			if len(cells) == 0 || len(cells) > 20 {
+				return fmt.Errorf("cells[%d] must contain 1 to 20 cells", row)
+			}
+			for column, cell := range cells {
+				if len(cell.Text) != 0 && string(cell.Text) != "null" {
+					if err := validateRichText(cell.Text, "cells"); err != nil {
+						return fmt.Errorf("cells[%d][%d]: %w", row, column, err)
+					}
+				}
+			}
+		}
+	case tgbotapi.RichBlockTypeDetails:
+		if err := validateRichText(block.Summary, "summary"); err != nil {
+			return err
+		}
+		if err := validateRichBlocks(block.Blocks); err != nil {
+			return err
+		}
+	case tgbotapi.RichBlockTypeMap:
+		if len(block.Location) == 0 || string(block.Location) == "null" {
+			return fmt.Errorf("location is required")
+		}
+	case tgbotapi.RichBlockTypeAnimation:
+		if len(block.Animation) == 0 || string(block.Animation) == "null" {
+			return fmt.Errorf("animation is required")
+		}
+	case tgbotapi.RichBlockTypeAudio:
+		if len(block.Audio) == 0 || string(block.Audio) == "null" {
+			return fmt.Errorf("audio is required")
+		}
+	case tgbotapi.RichBlockTypePhoto:
+		if len(block.Photo) == 0 || string(block.Photo) == "null" {
+			return fmt.Errorf("photo is required")
+		}
+	case tgbotapi.RichBlockTypeVideo:
+		if len(block.Video) == 0 || string(block.Video) == "null" {
+			return fmt.Errorf("video is required")
+		}
+	case tgbotapi.RichBlockTypeVoiceNote:
+		if len(block.VoiceNote) == 0 || string(block.VoiceNote) == "null" {
+			return fmt.Errorf("voice_note is required")
+		}
+	}
+	return nil
+}
+
+func validateRichBlocks(blocks []inputRichBlockWire) error {
+	if len(blocks) == 0 {
+		return fmt.Errorf("blocks is required")
+	}
+	for i, block := range blocks {
+		if err := validateInputRichBlock(block); err != nil {
+			return fmt.Errorf("blocks[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func validateRichText(raw json.RawMessage, field string) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		return fmt.Errorf("%s is required", field)
+	}
+	var text tgbotapi.RichText
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return fmt.Errorf("%s is invalid: %w", field, err)
+	}
+	return nil
+}
+
+func validateInlineKeyboardMarkup(markup *tgbotapi.InlineKeyboardMarkup) error {
+	if markup == nil {
+		return nil
+	}
+	for rowIndex, row := range markup.InlineKeyboard {
+		if len(row) == 0 {
+			return fmt.Errorf("inline_keyboard[%d] must not be empty", rowIndex)
+		}
+		for buttonIndex, button := range row {
+			if button.Text == "" || !utf8.ValidString(button.Text) {
+				return fmt.Errorf("inline_keyboard[%d][%d].text is required and must be valid UTF-8", rowIndex, buttonIndex)
+			}
+		}
+	}
+	if err := markup.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+var richBlockTypes = map[string]bool{
+	tgbotapi.RichBlockTypeParagraph:              true,
+	tgbotapi.RichBlockTypeSectionHeading:         true,
+	tgbotapi.RichBlockTypePreformatted:           true,
+	tgbotapi.RichBlockTypeFooter:                 true,
+	tgbotapi.RichBlockTypeDivider:                true,
+	tgbotapi.RichBlockTypeMathematicalExpression: true,
+	tgbotapi.RichBlockTypeAnchor:                 true,
+	tgbotapi.RichBlockTypeList:                   true,
+	tgbotapi.RichBlockTypeBlockQuotation:         true,
+	tgbotapi.RichBlockTypePullQuotation:          true,
+	tgbotapi.RichBlockTypeCollage:                true,
+	tgbotapi.RichBlockTypeSlideshow:              true,
+	tgbotapi.RichBlockTypeTable:                  true,
+	tgbotapi.RichBlockTypeDetails:                true,
+	tgbotapi.RichBlockTypeMap:                    true,
+	tgbotapi.RichBlockTypeAnimation:              true,
+	tgbotapi.RichBlockTypeAudio:                  true,
+	tgbotapi.RichBlockTypePhoto:                  true,
+	tgbotapi.RichBlockTypeVideo:                  true,
+	tgbotapi.RichBlockTypeVoiceNote:              true,
+	tgbotapi.RichBlockTypeThinking:               true,
 }
 
 func richMessageText(rich inputRichMessageWire) string {

@@ -171,6 +171,93 @@ func TestHandleSendRichMessage_ProjectsBlocksAndCopyText(t *testing.T) {
 	}
 }
 
+// These cases are intentionally transport-level tests.  A green scenario must
+// mean Telegram would have accepted the outgoing rich-message shape, rather
+// than merely that Chatwright managed to turn it into a readable transcript.
+func TestHandleSendRichMessage_ValidatesInputModesAndReplyMarkup(t *testing.T) {
+	for name, payload := range map[string]map[string]any{
+		"no input mode": {
+			"chat_id":      42,
+			"rich_message": map[string]any{},
+		},
+		"two input modes": {
+			"chat_id": 42,
+			"rich_message": map[string]any{
+				"html":     "<b>Lobby</b>",
+				"markdown": "**Lobby**",
+			},
+		},
+		"unsupported block": {
+			"chat_id": 42,
+			"rich_message": map[string]any{
+				"blocks": []map[string]any{{"type": "not_a_telegram_block", "text": "Lobby"}},
+			},
+		},
+		"heading without text": {
+			"chat_id": 42,
+			"rich_message": map[string]any{
+				"blocks": []map[string]any{{"type": "heading"}},
+			},
+		},
+		"invalid inline button": {
+			"chat_id": 42,
+			"rich_message": map[string]any{
+				"markdown": "**Lobby**",
+			},
+			"reply_markup": map[string]any{
+				"inline_keyboard": [][]map[string]any{{{
+					"text": "Invalid", "callback_data": "one", "url": "https://example.test",
+				}}},
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := NewEmulator()
+			t.Cleanup(e.Close)
+			status, env := postJSON(t, e.BotAPIURL()+"/botTEST/sendRichMessage", payload)
+			if status != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d: %v", status, http.StatusBadRequest, env)
+			}
+			if ok, _ := env["ok"].(bool); ok {
+				t.Fatalf("envelope ok = true, want false: %v", env)
+			}
+			if description, _ := env["description"].(string); !strings.Contains(description, "rich_message") && !strings.Contains(description, "reply_markup") {
+				t.Fatalf("description = %q, want rich_message or reply_markup context", description)
+			}
+		})
+	}
+}
+
+func TestHandleSendRichMessage_AcceptsBotAPI101HTMLAndMarkdown(t *testing.T) {
+	e := NewEmulator()
+	t.Cleanup(e.Close)
+
+	for consumed, test := range []struct {
+		name string
+		rich map[string]any
+		want string
+	}{
+		{name: "HTML", rich: map[string]any{"html": "<b>🃏 Preferans</b>"}, want: "🃏 Preferans"},
+		{name: "Markdown", rich: map[string]any{"markdown": "**🃏 Preferans**"}, want: "**🃏 Preferans**"},
+	} {
+		status, env := postJSON(t, e.BotAPIURL()+"/botTEST/sendRichMessage", map[string]any{
+			"chat_id":      42,
+			"rich_message": test.rich,
+		})
+		if status != http.StatusOK {
+			t.Fatalf("%s: status = %d, want %d: %v", test.name, status, http.StatusOK, env)
+		}
+		result := resultOf(t, env)
+		if messageID, _ := result["message_id"].(float64); messageID != float64(consumed+1) {
+			t.Fatalf("%s: result.message_id = %v, want %d", test.name, result["message_id"], consumed+1)
+		}
+		message, ok := e.WaitForMessage(42, consumed, time.Second)
+		if !ok || message.Text != test.want {
+			t.Fatalf("%s: captured message = %+v, ok=%v", test.name, message, ok)
+		}
+	}
+}
+
 func TestHandleEditMessageText_RichMessageFormBody(t *testing.T) {
 	e := NewEmulator()
 	t.Cleanup(e.Close)
@@ -197,6 +284,29 @@ func TestHandleEditMessageText_RichMessageFormBody(t *testing.T) {
 	msg, ok := e.WaitForEdit(7, messageID, 0, time.Second)
 	if !ok || msg.Text != "Confirmed wallet settlement\nAlice | +5 🪙" {
 		t.Fatalf("edited rich message = %+v, ok=%v", msg, ok)
+	}
+}
+
+func TestHandleEditMessageText_RejectsMalformedRichMessage(t *testing.T) {
+	e := NewEmulator()
+	t.Cleanup(e.Close)
+
+	_, sendEnv := postJSON(t, e.BotAPIURL()+"/botTEST/sendMessage", map[string]any{"chat_id": 7, "text": "Lobby"})
+	messageID := int(resultOf(t, sendEnv)["message_id"].(float64))
+	status, env := postJSON(t, e.BotAPIURL()+"/botTEST/editMessageText", map[string]any{
+		"chat_id":    7,
+		"message_id": messageID,
+		"rich_message": map[string]any{
+			"html":     "<b>Lobby</b>",
+			"markdown": "**Lobby**",
+		},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d: %v", status, http.StatusBadRequest, env)
+	}
+	description, _ := env["description"].(string)
+	if !strings.Contains(description, "rich_message") || !strings.Contains(description, "only one") {
+		t.Fatalf("description = %q, want the malformed rich_message reason", description)
 	}
 }
 
