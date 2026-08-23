@@ -16,3 +16,4 @@ go.work.sum
 .vscode/
 .DS_Store
 *.swp
+specscore.local.yaml
