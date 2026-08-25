@@ -1,6 +1,6 @@
 module chatwright.dev/runtime
 
-go 1.26.1
+go 1.27.0
 
 require (
 	chatwright.dev/sdk v0.3.0
