@@ -61,8 +61,10 @@ func newServer(relayURL, instructions string, logger *log.Logger) *server {
 	if instructions == "" {
 		instructions = "This channel connects to a Chatwright test harness, not a real chat client. " +
 			"Inbound user messages arrive as notifications/claude/channel notifications carrying " +
-			"meta.chat_id, meta.message_id, meta.user and meta.ts. Reply with the reply tool, " +
-			"passing the same chat_id. Use edit_message to revise a message you already sent."
+			"meta.chat_id, meta.message_id, meta.user and meta.ts. The user can only see what you " +
+			"send with the reply tool (pass the same chat_id); text you write in the terminal is " +
+			"never delivered to them. Answer every channel message by calling reply exactly once. " +
+			"Use edit_message to revise a message you already sent."
 	}
 	return &server{
 		relayURL:     relayURL,
@@ -157,7 +159,7 @@ func (s *server) handle(req jsonrpcRequest) {
 var toolDefs = []map[string]any{
 	{
 		"name":        "reply",
-		"description": "Send a message to the user on this channel.",
+		"description": "Send a message to the user on this channel. This is the only way the user sees your answer: terminal output is not delivered. Call it once per inbound channel message, with that message's meta.chat_id.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{

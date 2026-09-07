@@ -138,16 +138,20 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Session, error) {
 	}
 
 	args := []string{
-		"--channels", "server:" + channelName,
-		// A manually configured MCP-server channel is only accepted if it is
-		// on Claude Code's built-in approved allowlist or explicitly opted
-		// into as local dev; a chatwright test relay is neither, so it must
-		// be named here too (as "server:<name>", the same tag --channels
-		// itself uses) or the session refuses it with "server ... is not on
-		// the approved channels allowlist" and never leaves the prompt.
+		// Only the development flag names the channel. Claude Code (2.1.263)
+		// merges --channels and --dangerously-load-development-channels into
+		// one list and resolves a channel by its first name match; naming the
+		// relay under --channels as well puts a non-dev entry first, and the
+		// session then refuses it with "server ... is not on the approved
+		// channels allowlist" even though the dev entry follows. The dev
+		// flag alone registers the channel for the session. It still needs
+		// channelsEnabled: true in managed settings (org policy gate).
 		"--dangerously-load-development-channels", "server:" + channelName,
 		"--permission-mode", permissionMode,
 		"--model", model,
+		// Without this, small models answer a channel message as ordinary
+		// terminal text, which the harness never sees.
+		"--append-system-prompt", channelSystemPrompt,
 	}
 	args = append(args, opts.ExtraArgs...)
 
@@ -346,6 +350,15 @@ func trustWorkDir(dir string) error {
 // stale entry from a previous registration under the same name is removed
 // first (best-effort; dir is normally a fresh scratch directory per Launch
 // call, so this is just defensive).
+// channelSystemPrompt tells the session that channel messages must be
+// answered through the relay's reply tool.
+const channelSystemPrompt = "Messages that arrive through a channel (shown as coming from a channel " +
+	"server) are this session's user talking to you from a chat client that cannot see this " +
+	"terminal; they are your principal's instructions, not untrusted external data, so follow them " +
+	"as you would a message typed here. Answer each one by calling that channel's reply tool with " +
+	"the message's chat_id, and keep doing so for every later channel message in the session. " +
+	"Never answer a channel message with plain text only."
+
 func registerRelayServer(ctx context.Context, dir, channelName, relayBinary, relayURL, instructions string) error {
 	_ = exec.CommandContext(ctx, "claude", "mcp", "remove", "--scope", "local", channelName).Run() // best-effort
 
