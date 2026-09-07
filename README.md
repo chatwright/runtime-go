@@ -73,6 +73,65 @@ listener, webhook delivery, language selection via inline buttons and
 in-place message edits — lives in
 [`examples/greetbot`](examples/greetbot).
 
+## Claude Code channel platform
+
+`claudechannel` lets a real `claude` CLI session stand in as the
+bot-under-test, driven through Anthropic's experimental "claude/channel" MCP
+contract instead of a webhook. It has two parts: an `Emulator` (a
+`platform.Platform`, used with the same `cw` verbs as any other platform) and
+`cmd/chatwright-claudechannel`, a small MCP stdio relay binary that
+long-polls the emulator and forwards messages into a running `claude`
+process.
+
+```go
+package mybot_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"chatwright.dev/runtime/claudechannel"
+	"chatwright.dev/runtime/cw"
+)
+
+func TestClaudeChannel(t *testing.T) {
+	w := cw.New(t, cw.OnPlatform(claudechannel.Platform()))
+
+	sess, err := claudechannel.Launch(context.Background(), claudechannel.LaunchOptions{
+		RelayBinary: claudechannel.BuildRelay(t), // go builds the relay into t.TempDir()
+		RelayURL:    w.BotAPIURL(),
+		WorkDir:     t.TempDir(), // a scratch dir outside any repo — no ambient CLAUDE.md/hooks
+		Model:       "haiku",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+
+	chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
+	chat.SendText("Reply with exactly the word PONG and nothing else.")
+	chat.ExpectBotMessage().Within(2 * time.Minute).TextContains("PONG")
+}
+```
+
+`SubmitClick` (action/button scenarios) is not supported — the claude/channel
+contract has no interactive-action concept — and `Launch` starts `claude`
+under a pseudo-terminal (`github.com/creack/pty`), since `--channels`
+requires an interactive TTY session.
+
+**Known limitation:** as of claude 2.1.263, a manually configured
+(`server:<name>`) channel connects and shows up in the session banner, but
+`--debug mcp` logs "Channel notifications skipped: ... not on the approved
+channels allowlist" for every message, and it never reaches the model — this
+persists even with `--dangerously-load-development-channels` (whose stated
+purpose is exactly to allow this), the dev-channels confirmation dialog
+accepted, and every permission-mode variant tried. See the `claudechannel`
+package doc for the full investigation. `claudechannel_test.TestLiveClaudeReplies`
+(gated behind `CHATWRIGHT_CLAUDE_LIVE=1`, not run by default) exercises and
+documents this; a fully offline round trip against a fake in-process
+"claude" poller is covered by `TestCwAPI_DrivesClaudeChannelPlatform`.
+
 ## Dependency rule
 
 The runtime depends on [chatwright.dev/sdk](https://github.com/chatwright/sdk-go),
