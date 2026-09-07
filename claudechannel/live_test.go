@@ -20,12 +20,10 @@ import (
 // whole point of driving Claude Code as a long-running channel rather than
 // one-shot `claude -p`.
 //
-// As of claude 2.1.263 this test fails at the first ExpectBotMessage: see
-// the package doc's "Known limitation" section. Session.Output() (logged on
-// cleanup) always shows the relay connecting successfully as an MCP server
-// and the channel banner rendering; the message never reaches the model.
-// Re-run this test after a claude upgrade to check whether the platform-side
-// gate has been lifted.
+// It needs channelsEnabled: true in Claude Code's managed settings and a
+// model that follows the relay's instructions (Sonnet by default, see
+// liveModel); the package doc's "Org policy and model choice" section has
+// the details. Session.Output() is logged on cleanup for diagnosis.
 func TestLiveClaudeReplies(t *testing.T) {
 	if os.Getenv("CHATWRIGHT_CLAUDE_LIVE") != "1" {
 		t.Skip("set CHATWRIGHT_CLAUDE_LIVE=1 to run this test against a real claude process (costs usage)")
@@ -43,7 +41,7 @@ func TestLiveClaudeReplies(t *testing.T) {
 		RelayBinary: relayBin,
 		RelayURL:    w.BotAPIURL(),
 		WorkDir:     workDir,
-		Model:       "haiku",
+		Model:       liveModel(),
 	})
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
@@ -62,4 +60,16 @@ func TestLiveClaudeReplies(t *testing.T) {
 
 	chat.SendText("Now reply with exactly the word PING.")
 	chat.ExpectBotMessage().Within(120 * time.Second).TextContains("PING")
+}
+
+// liveModel is the model the live test drives; CHATWRIGHT_CLAUDE_MODEL
+// overrides the default. Haiku answers the first channel message but tends to
+// treat later ones as "untrusted external data" (Claude Code's own channel
+// preamble says so) and stays silent; Sonnet follows the relay's
+// instructions reliably.
+func liveModel() string {
+	if m := os.Getenv("CHATWRIGHT_CLAUDE_MODEL"); m != "" {
+		return m
+	}
+	return "sonnet"
 }
