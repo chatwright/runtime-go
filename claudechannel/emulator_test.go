@@ -26,7 +26,7 @@ func TestEmulator_SubmitText_QueuesInbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /inbox: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var msgs []inboxMessage
 	if err := json.NewDecoder(resp.Body).Decode(&msgs); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -45,7 +45,7 @@ func TestEmulator_Inbox_TimesOutEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /inbox: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var msgs []inboxMessage
 	_ = json.NewDecoder(resp.Body).Decode(&msgs)
 	if len(msgs) != 0 {
@@ -173,7 +173,7 @@ func postJSONInto(t *testing.T, url string, body, out any) {
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		t.Fatalf("POST %s: status %d", url, resp.StatusCode)
 	}

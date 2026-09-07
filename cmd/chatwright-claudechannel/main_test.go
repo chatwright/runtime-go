@@ -171,7 +171,7 @@ func TestServer_InitializeAndToolsList(t *testing.T) {
 	out := newLineWriter()
 	in, inWriter := io.Pipe()
 	go func() { _ = s.run(in, out) }()
-	defer inWriter.Close()
+	defer func() { _ = inWriter.Close() }()
 
 	send(t, inWriter, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	resp := out.next(t)
@@ -207,7 +207,7 @@ func TestServer_ForwardsInboxAsNotification(t *testing.T) {
 	out := newLineWriter()
 	in, inWriter := io.Pipe()
 	go func() { _ = s.run(in, out) }()
-	defer inWriter.Close()
+	defer func() { _ = inWriter.Close() }()
 
 	send(t, inWriter, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	out.next(t) // initialize response
@@ -238,7 +238,7 @@ func TestServer_ReplyToolCallsRelay(t *testing.T) {
 	out := newLineWriter()
 	in, inWriter := io.Pipe()
 	go func() { _ = s.run(in, out) }()
-	defer inWriter.Close()
+	defer func() { _ = inWriter.Close() }()
 
 	send(t, inWriter, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	out.next(t)
@@ -266,7 +266,7 @@ func TestServer_EditMessageToolCallsRelay(t *testing.T) {
 	out := newLineWriter()
 	in, inWriter := io.Pipe()
 	go func() { _ = s.run(in, out) }()
-	defer inWriter.Close()
+	defer func() { _ = inWriter.Close() }()
 
 	send(t, inWriter, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	out.next(t)
@@ -291,7 +291,7 @@ func TestServer_Ping(t *testing.T) {
 	out := newLineWriter()
 	in, inWriter := io.Pipe()
 	go func() { _ = s.run(in, out) }()
-	defer inWriter.Close()
+	defer func() { _ = inWriter.Close() }()
 
 	send(t, inWriter, `{"jsonrpc":"2.0","id":9,"method":"ping"}`)
 	resp := out.next(t)
