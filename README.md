@@ -132,6 +132,65 @@ package doc for the full investigation. `claudechannel_test.TestLiveClaudeReplie
 documents this; a fully offline round trip against a fake in-process
 "claude" poller is covered by `TestCwAPI_DrivesClaudeChannelPlatform`.
 
+## Claude Code print-mode platform
+
+`claudeprint` drives `claude` in print mode (`claude -p ... --output-format
+stream-json`) instead of the interactive channel contract claudechannel
+uses, sidestepping the approved-channels allowlist block documented above:
+each user turn spawns its own non-interactive `claude -p` process, so there
+is no channel to be rejected from in the first place.
+
+```go
+package mybot_test
+
+import (
+	"testing"
+	"time"
+
+	"chatwright.dev/runtime/claudeprint"
+	"chatwright.dev/runtime/cw"
+)
+
+func TestClaudePrint(t *testing.T) {
+	w := cw.New(t, cw.OnPlatform(claudeprint.New(
+		claudeprint.WithModel("haiku"),
+		claudeprint.WithWorkDir(t.TempDir()), // scratch dir outside any repo
+	)))
+
+	chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
+	chat.SendText("The secret word is pineapple. Reply OK.")
+	chat.ExpectBotMessage().Within(2 * time.Minute).IsTextMessage()
+
+	chat.SendText("What is the secret word? One word.")
+	chat.ExpectBotMessage().Within(2 * time.Minute).TextContains("pineapple")
+}
+```
+
+The first `SubmitText` for a chat generates a UUID and passes it as
+`--session-id <uuid>`; every later turn for that chat passes `--resume
+<uuid>`, so the conversation continues server-side across processes — the
+second turn above sees the first turn's "pineapple" purely through
+`--resume`, with no state kept on the Go side beyond the session ID itself.
+Every assistant `tool_use` block (e.g. a `Bash` command) is captured both in
+the `Journal` (as an uncaptured `tool_use:<Name>` entry) and through the
+typed `Emulator.ToolCalls(chatID)` accessor, so a scenario can assert e.g.
+that a specific command ran; per-turn accounting (`num_turns`,
+`total_cost_usd`, `duration_ms`) is likewise available via
+`Emulator.Metrics(chatID)`. `SubmitClick` always errors — print mode has no
+buttons — and a failed turn (non-zero exit, a timeout, or a missing
+`result` event) is delivered as a single `"error: ..."` bot message rather
+than a scenario timeout, with the stderr tail recorded in the journal.
+
+**Trade-offs vs `claudechannel`:** one OS process per turn instead of one
+long-running session (higher latency and cost per turn, no live in-process
+state between turns beyond what `--resume` reconstructs server-side), and
+no interactive-action support — but it works today against the current
+`claude` binary, with no allowlist gate to trip. `TestLiveClaudePrintReplies`
+(gated behind `CHATWRIGHT_CLAUDE_LIVE=1`) exercises a real two-turn `haiku`
+conversation end to end; a fully offline round trip against a fake `claude`
+binary is covered by `TestCwAPI_DrivesClaudeprintPlatform` and
+`claudeprint`'s own unit tests.
+
 ## Dependency rule
 
 The runtime depends on [chatwright.dev/sdk](https://github.com/chatwright/sdk-go),
