@@ -254,7 +254,7 @@ func (e *Emulator) runTurn(chatID int64, sessionID string, first bool, text stri
 		e.deliverError(chatID, fmt.Sprintf("open %s: %v", os.DevNull, err), "")
 		return
 	}
-	defer devNull.Close()
+	defer func() { _ = devNull.Close() }()
 	cmd.Stdin = devNull
 
 	stdout, err := cmd.StdoutPipe()
