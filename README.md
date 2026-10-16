@@ -45,7 +45,7 @@ subprocess).
 [DataTug](https://datatug.app) is our flagship product. A proposed way to
 investigate Chatwright's recorded data assertions in DataTug is still at the
 design stage and is not a runtime integration. Read [how we build DataTug with
-our tools](https://datatug.app/en/under-the-hood/tools-we-built/).
+our tools](https://datatug.app/en/under-the-hood/tools-we-built/#test-conversations).
 
 ## Install
 
