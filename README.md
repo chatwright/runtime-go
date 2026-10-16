@@ -40,6 +40,13 @@ The bot under test may be written in any language or framework — Chatwright
 only speaks HTTP (see `examples/pybot` for a Python bot driven as a real
 subprocess).
 
+## DataTug in the wider development toolbox
+
+[DataTug](https://datatug.app) is our flagship product. A proposed way to
+investigate Chatwright's recorded data assertions in DataTug is still at the
+design stage and is not a runtime integration. Read [how we build DataTug with
+our tools](https://datatug.app/en/under-the-hood/tools-we-built/).
+
 ## Install
 
 ```sh
