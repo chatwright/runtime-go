@@ -60,12 +60,12 @@ func TestReportClassifiesFindings(t *testing.T) {
 
 	callerFinding := campaign.Finding{
 		Kind: campaign.FindingVerifiedDefect, TaskID: "checkout",
-		Summary: "DTQL shows the order was never persisted despite a success message",
+		Summary: "TugQL shows the order was never persisted despite a success message",
 		Evidence: campaign.Evidence{
 			ObservationSequences: []int64{4},
 			LoopEventIndexes:     []int{5},
 		},
-		Confidence: "dtql-verified",
+		Confidence: "tugql-verified",
 	}
 
 	report := campaign.Assemble(campaign.AssembleInput{
@@ -100,7 +100,7 @@ func TestReportClassifiesFindings(t *testing.T) {
 	if len(checkoutFindings) != 1 {
 		t.Fatalf("checkout findings = %+v, want exactly the one caller-supplied finding", checkoutFindings)
 	}
-	if checkoutFindings[0].Kind != campaign.FindingVerifiedDefect || checkoutFindings[0].Confidence != "dtql-verified" {
+	if checkoutFindings[0].Kind != campaign.FindingVerifiedDefect || checkoutFindings[0].Confidence != "tugql-verified" {
 		t.Fatalf("checkout finding = %+v, want the caller-supplied verified-defect passed through unchanged", checkoutFindings[0])
 	}
 

@@ -13,7 +13,7 @@ import (
 // ackCriteria is a deterministic goal.Criteria: it holds the moment a bot
 // message with the given text is visible in the observation — the
 // "deterministic conversation predicate" shape
-// spec/ideas/evidence-defined-completion.md describes, no DTQL/executor
+// spec/ideas/evidence-defined-completion.md describes, no TugQL/executor
 // needed for this proof.
 func ackCriteria(wantText string) goal.Criteria {
 	return func(_ context.Context, obs observe.Observation) (bool, error) {

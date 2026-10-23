@@ -18,7 +18,7 @@ type AssembleInput struct {
 
 	// CallerFindings are findings this slice's mechanics cannot derive on
 	// their own — chiefly FindingVerifiedDefect: "the actor acted and the
-	// observed outcome was wrong" requires deterministic or DTQL evidence
+	// observed outcome was wrong" requires deterministic or TugQL evidence
 	// (a later slice) or some other judgement outside this package's
 	// mechanical rules. Assemble includes them verbatim, appended after its
 	// own derived findings — this is the caller's seam to plug verification
