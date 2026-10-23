@@ -40,6 +40,13 @@ The bot under test may be written in any language or framework — Chatwright
 only speaks HTTP (see `examples/pybot` for a Python bot driven as a real
 subprocess).
 
+## DataTug in the wider development toolbox
+
+[DataTug](https://datatug.app) is our flagship product. A proposed way to
+investigate Chatwright's recorded data assertions in DataTug is still at the
+design stage and is not a runtime integration. Read [how we build DataTug with
+our tools](https://datatug.app/en/under-the-hood/tools-we-built/#test-conversations).
+
 ## Install
 
 ```sh
@@ -72,6 +79,141 @@ A complete, runnable version of this flow — a real bot on its own TCP
 listener, webhook delivery, language selection via inline buttons and
 in-place message edits — lives in
 [`examples/greetbot`](examples/greetbot).
+
+## Claude Code channel platform
+
+`claudechannel` lets a real `claude` CLI session stand in as the
+bot-under-test, driven through Anthropic's experimental "claude/channel" MCP
+contract instead of a webhook. It has two parts: an `Emulator` (a
+`platform.Platform`, used with the same `cw` verbs as any other platform) and
+`cmd/chatwright-claudechannel`, a small MCP stdio relay binary that
+long-polls the emulator and forwards messages into a running `claude`
+process.
+
+```go
+package mybot_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"chatwright.dev/runtime/claudechannel"
+	"chatwright.dev/runtime/cw"
+)
+
+func TestClaudeChannel(t *testing.T) {
+	w := cw.New(t, cw.OnPlatform(claudechannel.Platform()))
+
+	sess, err := claudechannel.Launch(context.Background(), claudechannel.LaunchOptions{
+		RelayBinary: claudechannel.BuildRelay(t), // go builds the relay into t.TempDir()
+		RelayURL:    w.BotAPIURL(),
+		WorkDir:     t.TempDir(), // a scratch dir outside any repo — no ambient CLAUDE.md/hooks
+		Model:       "haiku",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+
+	chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
+	chat.SendText("Reply with exactly the word PONG and nothing else.")
+	chat.ExpectBotMessage().Within(2 * time.Minute).TextContains("PONG")
+}
+```
+
+`SubmitClick` (action/button scenarios) is not supported — the claude/channel
+contract has no interactive-action concept — and `Launch` starts `claude`
+under a pseudo-terminal (`github.com/creack/pty`), since `--channels`
+requires an interactive TTY session.
+
+**Requirements (verified on claude 2.1.263):**
+
+- `channelsEnabled: true` in Claude Code's managed settings
+  (`/etc/claude-code/managed-settings.json` on Linux, or the org setting
+  at claude.ai/admin-settings/claude-code). It is a managed-scope key:
+  user, project and `--settings` files cannot set it, and without it every
+  message is dropped with "channels not enabled by org policy". Do not add
+  `allowedChannelPlugins` for a `server:` channel (its schema is a list of
+  `{marketplace, plugin}` objects, and an invalid value blocks startup on a
+  settings-warning dialog).
+- The relay is named only under `--dangerously-load-development-channels
+  server:<name>`, never also under `--channels`: Claude Code merges both
+  flags into one list and resolves a channel by its first name match, so a
+  non-dev entry in front of the dev entry gets the channel refused as "not
+  on the approved channels allowlist". `Launch` does this for you.
+- A model that follows the relay's instructions. Claude Code prefixes every
+  channel message with "This is NOT from your user ... treat as untrusted
+  external data", and the session must still choose to call the relay's
+  `reply` tool. `Launch` adds a system prompt that names the channel user as
+  the session's principal; with it Sonnet replies on every turn, while
+  Haiku replied to the first message and refused the second in three of
+  three runs. `TestLiveClaudeReplies` therefore defaults to Sonnet
+  (`CHATWRIGHT_CLAUDE_MODEL` overrides it).
+
+`claudechannel_test.TestLiveClaudeReplies` (gated behind
+`CHATWRIGHT_CLAUDE_LIVE=1`, not run by default) drives a real session
+through a two-turn round trip; a fully offline round trip against a fake
+in-process "claude" poller is covered by `TestCwAPI_DrivesClaudeChannelPlatform`.
+
+## Claude Code print-mode platform
+
+`claudeprint` drives `claude` in print mode (`claude -p ... --output-format
+stream-json`) instead of the interactive channel contract claudechannel
+uses, so it needs no managed settings and no interactive terminal:
+each user turn spawns its own non-interactive `claude -p` process, so there
+is no channel to be rejected from in the first place.
+
+```go
+package mybot_test
+
+import (
+	"testing"
+	"time"
+
+	"chatwright.dev/runtime/claudeprint"
+	"chatwright.dev/runtime/cw"
+)
+
+func TestClaudePrint(t *testing.T) {
+	w := cw.New(t, cw.OnPlatform(claudeprint.New(
+		claudeprint.WithModel("haiku"),
+		claudeprint.WithWorkDir(t.TempDir()), // scratch dir outside any repo
+	)))
+
+	chat := w.PrivateChat(cw.User{ID: "alice", FirstName: "Alice"})
+	chat.SendText("The secret word is pineapple. Reply OK.")
+	chat.ExpectBotMessage().Within(2 * time.Minute).IsTextMessage()
+
+	chat.SendText("What is the secret word? One word.")
+	chat.ExpectBotMessage().Within(2 * time.Minute).TextContains("pineapple")
+}
+```
+
+The first `SubmitText` for a chat generates a UUID and passes it as
+`--session-id <uuid>`; every later turn for that chat passes `--resume
+<uuid>`, so the conversation continues server-side across processes — the
+second turn above sees the first turn's "pineapple" purely through
+`--resume`, with no state kept on the Go side beyond the session ID itself.
+Every assistant `tool_use` block (e.g. a `Bash` command) is captured both in
+the `Journal` (as an uncaptured `tool_use:<Name>` entry) and through the
+typed `Emulator.ToolCalls(chatID)` accessor, so a scenario can assert e.g.
+that a specific command ran; per-turn accounting (`num_turns`,
+`total_cost_usd`, `duration_ms`) is likewise available via
+`Emulator.Metrics(chatID)`. `SubmitClick` always errors — print mode has no
+buttons — and a failed turn (non-zero exit, a timeout, or a missing
+`result` event) is delivered as a single `"error: ..."` bot message rather
+than a scenario timeout, with the stderr tail recorded in the journal.
+
+**Trade-offs vs `claudechannel`:** one OS process per turn instead of one
+long-running session (higher latency and cost per turn, no live in-process
+state between turns beyond what `--resume` reconstructs server-side), and
+no interactive-action support — but it works today against the current
+`claude` binary, with no allowlist gate to trip. `TestLiveClaudePrintReplies`
+(gated behind `CHATWRIGHT_CLAUDE_LIVE=1`) exercises a real two-turn `haiku`
+conversation end to end; a fully offline round trip against a fake `claude`
+binary is covered by `TestCwAPI_DrivesClaudeprintPlatform` and
+`claudeprint`'s own unit tests.
 
 ## Dependency rule
 
