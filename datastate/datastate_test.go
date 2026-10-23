@@ -18,9 +18,9 @@ type fakeCall struct {
 	query  Query
 }
 
-// fakeExecutor is the fake DTQL executor used by every contract test in this
+// fakeExecutor is the fake TugQL executor used by every contract test in this
 // package, per the plan's requirement that Task 2A use a fake executor and
-// never require a real DTQL parser or a DataTug process.
+// never require a real TugQL parser or a DataTug process.
 type fakeExecutor struct {
 	mu      sync.Mutex
 	calls   []fakeCall
@@ -56,7 +56,7 @@ func TestAttachmentAfterMessageRecordsPassingEvidence(t *testing.T) {
 	assertion := Assertion{
 		Name:   "add-milk",
 		Holder: "listus",
-		Query:  Query{DTQL: "select from lists where key = buy!groceries", Params: map[string]any{"key": "buy!groceries"}},
+		Query:  Query{TugQL: "select from lists where key = buy!groceries", Params: map[string]any{"key": "buy!groceries"}},
 		Expect: RowContains(Row{"title": "milk", "active": true}),
 	}
 	evidence, err := runner.Run(context.Background(), AttachmentAfterMessage, assertion)
@@ -86,7 +86,7 @@ func TestNilExpectationAlwaysPasses(t *testing.T) {
 	evidence, err := runner.Run(context.Background(), AttachmentCheckpoint, Assertion{
 		Name:   "show-record",
 		Holder: "listus",
-		Query:  Query{DTQL: "select buy!groceries"},
+		Query:  Query{TugQL: "select buy!groceries"},
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -103,7 +103,7 @@ func TestGateBlocksCommitOnFailedAssertion(t *testing.T) {
 	assertions := []Assertion{{
 		Name:   "few-items-added",
 		Holder: "listus",
-		Query:  Query{DTQL: "select buy!groceries"},
+		Query:  Query{TugQL: "select buy!groceries"},
 		Expect: RowContains(Row{"title": "milk", "active": true}),
 	}}
 	evidence, err := runner.Gate(context.Background(), AttachmentCheckpoint, assertions, func() error {
@@ -129,8 +129,8 @@ func TestGateCallsCommitOnlyAfterAllAssertionsPass(t *testing.T) {
 	runner, _ := NewRunner(exec, Handles{"listus": "h"}, Limits{})
 	var order []string
 	assertions := []Assertion{
-		{Name: "one", Holder: "listus", Query: Query{DTQL: "q1"}, Expect: NonEmpty()},
-		{Name: "two", Holder: "listus", Query: Query{DTQL: "q2"}, Expect: NonEmpty()},
+		{Name: "one", Holder: "listus", Query: Query{TugQL: "q1"}, Expect: NonEmpty()},
+		{Name: "two", Holder: "listus", Query: Query{TugQL: "q2"}, Expect: NonEmpty()},
 	}
 	evidence, err := runner.Gate(context.Background(), AttachmentCheckpoint, assertions, func() error {
 		order = append(order, "commit")
@@ -156,7 +156,7 @@ func TestQueryUsesTheResolvedBranchHandle(t *testing.T) {
 	runner, _ := NewRunner(exec, Handles{"listus": branchHandle}, Limits{})
 	_, err := runner.Run(context.Background(), AttachmentBranchCompletion, Assertion{
 		Holder: "listus",
-		Query:  Query{DTQL: "select buy!groceries"},
+		Query:  Query{TugQL: "select buy!groceries"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -176,7 +176,7 @@ func TestQueryUsesTheResolvedBranchHandle(t *testing.T) {
 func TestUnresolvedHolderNameIsADeterministicError(t *testing.T) {
 	exec := &fakeExecutor{}
 	runner, _ := NewRunner(exec, Handles{"listus": "h1", "audit": "h2"}, Limits{})
-	assertion := Assertion{Holder: "unknown", Query: Query{DTQL: "select 1"}}
+	assertion := Assertion{Holder: "unknown", Query: Query{TugQL: "select 1"}}
 	first, err1 := runner.Run(context.Background(), AttachmentAfterMessage, assertion)
 	second, err2 := runner.Run(context.Background(), AttachmentAfterMessage, assertion)
 	if !errors.Is(err1, ErrUnknownHolder) || !errors.Is(err2, ErrUnknownHolder) {
@@ -196,7 +196,7 @@ func TestUnresolvedHolderNameIsADeterministicError(t *testing.T) {
 func TestOmittedHolderResolvesWhenExactlyOneRegistered(t *testing.T) {
 	exec := &fakeExecutor{handler: staticRows(Row{"ok": true})}
 	runner, _ := NewRunner(exec, Handles{"listus": "h1"}, Limits{})
-	evidence, err := runner.Run(context.Background(), AttachmentAfterMessage, Assertion{Query: Query{DTQL: "select 1"}})
+	evidence, err := runner.Run(context.Background(), AttachmentAfterMessage, Assertion{Query: Query{TugQL: "select 1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestOmittedHolderResolvesWhenExactlyOneRegistered(t *testing.T) {
 func TestOmittedHolderFailsWhenHoldersAreAmbiguous(t *testing.T) {
 	exec := &fakeExecutor{}
 	runner, _ := NewRunner(exec, Handles{"listus": "h1", "audit": "h2"}, Limits{})
-	_, err := runner.Run(context.Background(), AttachmentAfterMessage, Assertion{Query: Query{DTQL: "select 1"}})
+	_, err := runner.Run(context.Background(), AttachmentAfterMessage, Assertion{Query: Query{TugQL: "select 1"}})
 	if !errors.Is(err, ErrAmbiguousHolder) {
 		t.Fatalf("error = %v", err)
 	}
@@ -220,7 +220,7 @@ func TestOmittedHolderFailsWhenHoldersAreAmbiguous(t *testing.T) {
 func TestOmittedHolderFailsWhenNoHoldersRegistered(t *testing.T) {
 	exec := &fakeExecutor{}
 	runner, _ := NewRunner(exec, Handles{}, Limits{})
-	_, err := runner.Run(context.Background(), AttachmentAfterMessage, Assertion{Query: Query{DTQL: "select 1"}})
+	_, err := runner.Run(context.Background(), AttachmentAfterMessage, Assertion{Query: Query{TugQL: "select 1"}})
 	if !errors.Is(err, ErrNoHolders) {
 		t.Fatalf("error = %v", err)
 	}
@@ -237,7 +237,7 @@ func TestPreviewIsBoundedByRowAndFieldLimits(t *testing.T) {
 	runner, _ := NewRunner(exec, Handles{"listus": "h"}, Limits{MaxRows: 2, MaxFields: 2})
 	evidence, err := runner.Run(context.Background(), AttachmentAfterMessage, Assertion{
 		Holder: "listus",
-		Query:  Query{DTQL: "select *"},
+		Query:  Query{TugQL: "select *"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +263,7 @@ func TestRedactedFieldsNeverAppearInEvidence(t *testing.T) {
 	runner, _ := NewRunner(exec, Handles{"listus": "h"}, Limits{})
 	evidence, err := runner.Run(context.Background(), AttachmentAfterMessage, Assertion{
 		Holder: "listus",
-		Query:  Query{DTQL: "select *"},
+		Query:  Query{TugQL: "select *"},
 		Redact: []string{"ownerToken"},
 		// Expect still sees the real value: redaction bounds evidence, not
 		// what the assertion is allowed to check.
@@ -295,7 +295,7 @@ func TestRowNormalisationIsOrderDeterministic(t *testing.T) {
 	runnerOne, _ := NewRunner(execOne, Handles{"listus": "h"}, Limits{})
 	runnerTwo, _ := NewRunner(execTwo, Handles{"listus": "h"}, Limits{})
 
-	assertion := Assertion{Holder: "listus", Query: Query{DTQL: "select *"}}
+	assertion := Assertion{Holder: "listus", Query: Query{TugQL: "select *"}}
 	evOne, err := runnerOne.Run(context.Background(), AttachmentAfterMessage, assertion)
 	if err != nil {
 		t.Fatal(err)
@@ -330,7 +330,7 @@ func TestExcludedFieldsAreVisibleButDoNotAffectExpectation(t *testing.T) {
 	want := []Row{{"title": "milk", "active": true}}
 	assertion := Assertion{
 		Holder:        "listus",
-		Query:         Query{DTQL: "select *"},
+		Query:         Query{TugQL: "select *"},
 		Normalization: Normalization{ExcludedFields: []string{"id"}},
 		Expect:        ExactRows(want),
 	}
@@ -361,7 +361,7 @@ func TestEvidenceRecordsCanonicalQueryAndParams(t *testing.T) {
 	evidence, err := runner.Run(context.Background(), AttachmentCheckpoint, Assertion{
 		Name:   "few-items-added",
 		Holder: "listus",
-		Query:  Query{DTQL: "select from lists where parent = :space and key = :key", Params: params},
+		Query:  Query{TugQL: "select from lists where parent = :space and key = :key", Params: params},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -399,7 +399,7 @@ func TestQueryExecutionErrorFailsExplicitly(t *testing.T) {
 	runner, _ := NewRunner(exec, Handles{"listus": "h"}, Limits{})
 	evidence, err := runner.Run(context.Background(), AttachmentAfterMessage, Assertion{
 		Holder: "listus",
-		Query:  Query{DTQL: "select from lists group by parent"},
+		Query:  Query{TugQL: "select from lists group by parent"},
 	})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("error = %v, want wrapping %v", err, wantErr)
@@ -451,7 +451,7 @@ func TestRowContainsMatchesNestedShape(t *testing.T) {
 
 	evidence, err := runner.Run(context.Background(), AttachmentAfterMessage, Assertion{
 		Holder: "listus",
-		Query:  Query{DTQL: "select buy!groceries"},
+		Query:  Query{TugQL: "select buy!groceries"},
 		Expect: RowContains(Row{
 			"items": []any{
 				map[string]any{"title": "milk", "active": true},
@@ -469,7 +469,7 @@ func TestRowContainsMatchesNestedShape(t *testing.T) {
 	// A mismatched nested shape must fail explicitly, not pass silently.
 	_, err = runner.Run(context.Background(), AttachmentAfterMessage, Assertion{
 		Holder: "listus",
-		Query:  Query{DTQL: "select buy!groceries"},
+		Query:  Query{TugQL: "select buy!groceries"},
 		Expect: RowContains(Row{
 			"items": []any{map[string]any{"title": "milk", "active": false}},
 		}),
@@ -495,8 +495,8 @@ func TestRunAllStopsAtFirstFailure(t *testing.T) {
 	exec := &fakeExecutor{handler: staticRows(Row{"active": false})}
 	runner, _ := NewRunner(exec, Handles{"listus": "h"}, Limits{})
 	assertions := []Assertion{
-		{Name: "first", Holder: "listus", Query: Query{DTQL: "q1"}, Expect: RowContains(Row{"active": true})},
-		{Name: "second", Holder: "listus", Query: Query{DTQL: "q2"}, Expect: NonEmpty()},
+		{Name: "first", Holder: "listus", Query: Query{TugQL: "q1"}, Expect: RowContains(Row{"active": true})},
+		{Name: "second", Holder: "listus", Query: Query{TugQL: "q2"}, Expect: NonEmpty()},
 	}
 	evidence, err := runner.RunAll(context.Background(), AttachmentBranchCompletion, assertions...)
 	if err == nil {

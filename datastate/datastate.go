@@ -1,15 +1,15 @@
 // Package datastate is the smallest provider-neutral data-state assertion
 // runtime for the data-state-assertions feature
 // (spec/features/chatwright/deterministic-testing/data-state-assertions/README.md):
-// run a read-only DTQL query against a named application database after a
+// run a read-only TugQL query against a named application database after a
 // settled message/action, immediately before a checkpoint is published, or
 // at branch/fragment completion, and retain a bounded, redacted recordset as
 // evidence so a scenario proves what the application stored, not only what
 // the bot said.
 //
-// This package does not parse, validate or execute DTQL itself. The
-// Executor interface is the seam: it takes the concrete DTQL text plus
-// named parameters and returns rows. DALgo's real DTQL/dal.DB executor
+// This package does not parse, validate or execute TugQL itself. The
+// Executor interface is the seam: it takes the concrete TugQL text plus
+// named parameters and returns rows. DALgo's real TugQL/dal.DB executor
 // (Task 4 of spec/plans/listus-branching-reference-scenario.md) satisfies
 // it; this package's own tests use a fake. datastate never invents a
 // private query language and never falls back to scanning records itself
@@ -66,22 +66,22 @@ const (
 // Listus's parent-scoped list record and its nested `items` field.
 type Row map[string]any
 
-// Query is the canonical DTQL artifact executed by an assertion: the exact
-// DTQL text plus its named parameters. It is stored verbatim in evidence so
+// Query is the canonical TugQL artifact executed by an assertion: the exact
+// TugQL text plus its named parameters. It is stored verbatim in evidence so
 // a compatible DataTug surface opens the same query Chatwright executed
-// (data-state-assertions#ac:dtql-is-the-shared-artifact) — datastate never
+// (data-state-assertions#ac:tugql-is-the-shared-artifact) — datastate never
 // translates it through a private representation. The first release does
-// not add placeholder syntax to DTQL: the text stored here already contains
+// not add placeholder syntax to TugQL: the text stored here already contains
 // resolved values, and Params is carried alongside only because a real
 // dal.StructuredQuery executor may still want named parameters bound
 // separately from the query text.
 type Query struct {
-	DTQL   string
+	TugQL  string
 	Params map[string]any
 }
 
-// Executor runs one DTQL query against a resolved database handle and
-// returns its rows. The real implementation is DALgo's dtql package plus a
+// Executor runs one TugQL query against a resolved database handle and
+// returns its rows. The real implementation is DALgo's tugql package plus a
 // query-capable dal.DB (Task 4); this package depends only on the
 // interface, and its own contract tests use a fake. An Executor must fail
 // explicitly for unsupported query/provider capabilities rather than
@@ -148,7 +148,7 @@ type Assertion struct {
 	// Holder names the registered database holder to query. It may be
 	// omitted only when the Runner was built with exactly one handle.
 	Holder string
-	// Query is the canonical DTQL artifact to execute.
+	// Query is the canonical TugQL artifact to execute.
 	Query Query
 	// Normalization controls comparison-field exclusion and row ordering.
 	Normalization Normalization
@@ -168,7 +168,7 @@ type Assertion struct {
 type Expectation func(rows []Row) error
 
 // Evidence is the canonical, JSON-serialisable record of one executed
-// data-state assertion: the exact DTQL query and parameters, the holder it
+// data-state assertion: the exact TugQL query and parameters, the holder it
 // ran against, its pass/fail outcome, and a bounded, redacted, normalised
 // preview of the rows it returned. Every exported field carries an explicit
 // lower-camel-case `json` tag — Evidence reaches a run bundle (as
@@ -186,7 +186,7 @@ type Evidence struct {
 	// Holder is the resolved holder name the query ran against (even an
 	// unresolved request records the name that was asked for).
 	Holder string `json:"holder"`
-	// Query is the concrete DTQL text executed.
+	// Query is the concrete TugQL text executed.
 	Query string `json:"query"`
 	// Params is a detached copy of the query's named parameters.
 	Params map[string]any `json:"params"`
@@ -222,8 +222,8 @@ type Evidence struct {
 var (
 	// ErrNilExecutor is returned by NewRunner when executor is nil.
 	ErrNilExecutor = errors.New("datastate: executor is nil")
-	// ErrEmptyQuery is returned when an assertion's DTQL text is empty.
-	ErrEmptyQuery = errors.New("datastate: query DTQL text is empty")
+	// ErrEmptyQuery is returned when an assertion's TugQL text is empty.
+	ErrEmptyQuery = errors.New("datastate: query TugQL text is empty")
 	// ErrNoHolders is returned when a holder name is omitted and no
 	// handles are registered.
 	ErrNoHolders = errors.New("datastate: no database holders are registered")
@@ -292,7 +292,7 @@ func (r *Runner) Run(ctx context.Context, point AttachmentPoint, assertion Asser
 		Name:            assertion.Name,
 		AttachmentPoint: point,
 		Holder:          strings.TrimSpace(assertion.Holder),
-		Query:           assertion.Query.DTQL,
+		Query:           assertion.Query.TugQL,
 		Params:          cloneParams(assertion.Query.Params),
 		RedactedFields:  append([]string(nil), assertion.Redact...),
 		ExcludedFields:  append([]string(nil), assertion.Normalization.ExcludedFields...),
@@ -306,7 +306,7 @@ func (r *Runner) Run(ctx context.Context, point AttachmentPoint, assertion Asser
 	}
 	evidence.Holder = holderName
 
-	if strings.TrimSpace(assertion.Query.DTQL) == "" {
+	if strings.TrimSpace(assertion.Query.TugQL) == "" {
 		evidence.Outcome = OutcomeFailed
 		evidence.FailureMessage = ErrEmptyQuery.Error()
 		return evidence, ErrEmptyQuery
